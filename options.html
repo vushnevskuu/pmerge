@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Assistant Connector — Settings</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 480px; margin: 2rem auto; padding: 0 1rem; }
+    label { display: block; margin-bottom: 0.25rem; font-weight: 500; }
+    input[type="password"] { width: 100%; padding: 8px 12px; margin-bottom: 1rem; }
+    button { padding: 8px 16px; background: #2563eb; color: #fff; border: none; border-radius: 8px; cursor: pointer; }
+    .warn { background: #fef3c7; border: 1px solid #f59e0b; padding: 10px; border-radius: 8px; margin-bottom: 1rem; font-size: 14px; }
+    #status { margin-top: 0.5rem; font-size: 14px; }
+    select { width: 100%; padding: 8px 12px; margin-bottom: 1rem; }
+    .hint { font-size: 12px; color: #6b7280; margin-top: -0.5rem; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>AI Assistant Connector</h1>
+  <p class="warn">Storing API keys in the extension is insecure for production. Use only for personal prototyping.</p>
+  <form id="settings-form">
+    <label for="provider">Provider</label>
+    <select id="provider">
+      <option value="groq">Groq (free, Llama)</option>
+      <option value="openai">OpenAI (paid, image generation)</option>
+    </select>
+    <label for="api-key" id="api-key-label">Groq API Key</label>
+    <input type="password" id="api-key" placeholder="gsk_..." autocomplete="off">
+    <p class="hint" id="api-hint">Free key: <a href="https://console.groq.com" target="_blank">console.groq.com</a></p>
+    <button type="submit" id="save">Save</button>
+  </form>
+  <p id="status"></p>
+  <script src="dist/options.js"></script>
+</body>
+</html>
