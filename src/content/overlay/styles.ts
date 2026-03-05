@@ -15,7 +15,7 @@ export const overlayStyles = `
   .svg-layer {
     position: fixed;
     inset: 0;
-    z-index: 1;
+    z-index: 3;
     pointer-events: none;
     width: 100%;
     height: 100%;
@@ -98,18 +98,41 @@ export const overlayStyles = `
   .send-btn:disabled { opacity: 0.6; cursor: not-allowed; }
   .slots {
     display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
     margin-top: 10px;
   }
   .slot {
-    display: inline-flex;
+    display: flex;
     align-items: center;
     gap: 6px;
     padding: 4px 8px;
     background: rgba(243, 244, 246, 0.6);
     border-radius: 8px;
     border: 1px solid rgba(229, 231, 235, 0.8);
+    width: 100%;
+    max-width: 100%;
+  }
+  .slot-add-btn {
+    margin-top: 6px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    font-size: 18px;
+    line-height: 1;
+    border: 1px dashed rgba(156, 163, 175, 0.8);
+    border-radius: 6px;
+    background: rgba(243, 244, 246, 0.6);
+    color: #6b7280;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .slot-add-btn:hover {
+    background: rgba(229, 231, 235, 0.8);
+    color: #374151;
   }
   .port-dot {
     width: 16px;
@@ -124,7 +147,8 @@ export const overlayStyles = `
   }
   .port-dot:hover { background: #1d4ed8; }
   .slot-title {
-    width: 72px;
+    flex: 1;
+    min-width: 0;
     padding: 2px 6px;
     font-size: 12px;
     border: 1px solid transparent;

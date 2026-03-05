@@ -28,17 +28,25 @@ export interface Rect {
 
 export type TargetType = 'image' | 'link' | 'text' | 'element';
 
-export type ConnectionSlotId = 'composition' | 'tone' | 'palette' | 'theme';
+export type ConnectionSlotId = string;
 
-export const CONNECTION_SLOT_IDS: ConnectionSlotId[] = ['composition', 'tone', 'palette', 'theme'];
+export const DEFAULT_SLOT_IDS: ConnectionSlotId[] = ['composition', 'tone', 'palette'];
 
-export type SlotTitles = Record<ConnectionSlotId, string>;
-
-export const DEFAULT_SLOT_TITLES: SlotTitles = {
+export const DEFAULT_SLOT_TITLES: Record<string, string> = {
   composition: 'Composition',
   tone: 'Tone',
   palette: 'Palette',
   theme: 'Theme',
+};
+
+export const SLOT_ADD_LABELS: Record<number, string> = {
+  3: 'Theme',
+  4: 'Slot 5',
+  5: 'Slot 6',
+  6: 'Slot 7',
+  7: 'Slot 8',
+  8: 'Slot 9',
+  9: 'Slot 10',
 };
 
 export interface GraphTarget {
@@ -72,12 +80,14 @@ export interface GraphState {
   assistantNode: AssistantNode;
   targets: GraphTarget[];
   edges: GraphEdge[];
-  slotTitles: SlotTitles;
+  slotIds: ConnectionSlotId[];
+  slotTitles: Record<string, string>;
 }
 
 export interface AssistantSendRequestPayload {
   prompt: string;
   page: { url: string; title: string };
+  slotIds: ConnectionSlotId[];
   connections: Array<{
     slotId: ConnectionSlotId;
     slotTitle: string;

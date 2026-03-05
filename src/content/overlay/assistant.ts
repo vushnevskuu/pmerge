@@ -3,7 +3,6 @@
  */
 
 import type { GraphState, ConnectionSlotId } from '../../shared/types';
-import { CONNECTION_SLOT_IDS } from '../../shared/types';
 import { overlayStyles } from './styles';
 import { drawRopes, scheduleRopeDraw } from './ropes';
 import { resolveTarget } from '../targeting/locators';
@@ -14,6 +13,7 @@ import {
   removeEdge,
   setAssistantPosition,
   setSlotTitle,
+  addSlot,
   revalidateTargets,
   updateTargetRect,
   getTargetById,
@@ -49,24 +49,8 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
         <div class="send-row">
           <button type="button" class="send-btn" data-send>Send</button>
         </div>
-        <div class="slots" data-slots>
-          <div class="slot" data-slot="composition">
-            <span class="port-dot" data-port title="Drag to element"></span>
-            <input class="slot-title" data-slot-title type="text" value="Composition" />
-          </div>
-          <div class="slot" data-slot="tone">
-            <span class="port-dot" data-port title="Drag to element"></span>
-            <input class="slot-title" data-slot-title type="text" value="Tone" />
-          </div>
-          <div class="slot" data-slot="palette">
-            <span class="port-dot" data-port title="Drag to element"></span>
-            <input class="slot-title" data-slot-title type="text" value="Palette" />
-          </div>
-          <div class="slot" data-slot="theme">
-            <span class="port-dot" data-port title="Drag to element"></span>
-            <input class="slot-title" data-slot-title type="text" value="Theme" />
-          </div>
-        </div>
+        <div class="slots" data-slots></div>
+        <button type="button" class="slot-add-btn" data-slot-add title="Add slot">+</button>
         <details class="connections-list" data-connections-list>
           <summary>Connections</summary>
           <div data-connections-items></div>
@@ -74,13 +58,13 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
         <div class="status" data-status></div>
         <div class="result" data-result style="display:none">
           <div class="result-image-wrap" data-result-image></div>
-          <details class="result-image-descriptions" data-result-image-descriptions>
-            <summary>Image descriptions</summary>
-            <div class="result-image-descriptions-list" data-result-image-descriptions-list></div>
-          </details>
           <details class="result-prompt-toggle" data-result-prompt-toggle>
             <summary>Prompt</summary>
             <pre class="result-prompt-text" data-result-prompt-text></pre>
+          </details>
+          <details class="result-image-descriptions" data-result-image-descriptions>
+            <summary>Descriptions</summary>
+            <div class="result-image-descriptions-list" data-result-image-descriptions-list></div>
           </details>
           <div class="result-text" data-result-text></div>
         </div>
@@ -121,11 +105,37 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
   const highlightEl = shadow.querySelector('[data-highlight]') as HTMLElement;
   const connectionsList = shadow.querySelector('[data-connections-list]') as HTMLDetailsElement;
   const connectionsItems = shadow.querySelector('[data-connections-items]') as HTMLElement;
+  const slotAddBtn = shadow.querySelector('[data-slot-add]') as HTMLButtonElement;
+
+  function renderSlots() {
+    if (!slotsContainer) return;
+    slotsContainer.innerHTML = '';
+    state.slotIds.forEach((slotId) => {
+      const title = state.slotTitles[slotId] ?? slotId;
+      const div = document.createElement('div');
+      div.className = 'slot';
+      div.setAttribute('data-slot', slotId);
+      div.innerHTML = `
+        <span class="port-dot" data-port title="Drag to element"></span>
+        <input class="slot-title" data-slot-title type="text" value="${escapeHtml(title)}" />
+      `;
+      slotsContainer.appendChild(div);
+    });
+    state.slotIds.forEach((slotId) => setupSlotDrag(slotId));
+    syncSlotTitleInputs();
+    renderRopes();
+  }
+
+  function escapeHtml(s: string): string {
+    const div = document.createElement('div');
+    div.textContent = s;
+    return div.innerHTML;
+  }
 
   function updateConnectionsList() {
     if (!connectionsItems) return;
     connectionsItems.innerHTML = '';
-    CONNECTION_SLOT_IDS.forEach((slotId) => {
+    state.slotIds.forEach((slotId) => {
       const edge = getEdgeBySlot(state, slotId);
       const title = state.slotTitles[slotId];
       const div = document.createElement('div');
@@ -160,7 +170,7 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
   }
 
   function syncSlotTitleInputs() {
-    CONNECTION_SLOT_IDS.forEach((slotId) => {
+    state.slotIds.forEach((slotId) => {
       const slotEl = slotsContainer?.querySelector(`[data-slot="${slotId}"]`);
       const input = slotEl?.querySelector('[data-slot-title]') as HTMLInputElement | null;
       if (input && state.slotTitles[slotId] !== undefined) {
@@ -172,9 +182,9 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
   const resolveTargetEl = (target: GraphState['targets'][0]) =>
     resolveTarget(target, document);
 
-  const getPortPositions = (): Partial<Record<ConnectionSlotId, { x: number; y: number }>> => {
-    const out: Partial<Record<ConnectionSlotId, { x: number; y: number }>> = {};
-    CONNECTION_SLOT_IDS.forEach((slotId) => {
+  const getPortPositions = (): Partial<Record<string, { x: number; y: number }>> => {
+    const out: Partial<Record<string, { x: number; y: number }>> = {};
+    state.slotIds.forEach((slotId) => {
       const slotEl = slotsContainer?.querySelector(`[data-slot="${slotId}"]`);
       const port = slotEl?.querySelector('[data-port]') as HTMLElement | null;
       if (port) {
@@ -185,7 +195,7 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
     return out;
   };
 
-  let tempDragSlot: ConnectionSlotId | null = null;
+  let tempDragSlot: string | null = null;
 
   function renderRopes(tempEnd: { x: number; y: number } | null = null) {
     scheduleRopeDraw(
@@ -267,7 +277,7 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
 
   let tempEnd: { x: number; y: number } | null = null;
 
-  function setupSlotDrag(slotId: ConnectionSlotId) {
+  function setupSlotDrag(slotId: string) {
     const slotEl = slotsContainer?.querySelector(`[data-slot="${slotId}"]`);
     const port = slotEl?.querySelector('[data-port]') as HTMLElement | null;
     const titleInput = slotEl?.querySelector('[data-slot-title]') as HTMLInputElement | null;
@@ -330,7 +340,16 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
         const dx = ev.clientX - startX;
         const dy = ev.clientY - startY;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 8) return;
+        if (dist < 8) {
+          const edge = getEdgeBySlot(state, slotId);
+          if (edge) {
+            removeEdge(state, edge.id);
+            callbacks.onStateChange?.(state);
+            updateConnectionsList();
+            renderRopes();
+          }
+          return;
+        }
         const el = document.elementFromPoint(ev.clientX, ev.clientY);
         if (el && !shadow.contains(el)) {
           const tag = el.tagName?.toLowerCase();
@@ -365,7 +384,11 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
       document.addEventListener('pointercancel', onUp);
     });
   }
-  CONNECTION_SLOT_IDS.forEach(setupSlotDrag);
+  slotAddBtn?.addEventListener('click', () => {
+    addSlot(state);
+    renderSlots();
+    updateConnectionsList();
+  });
 
   sendBtn.addEventListener('click', async () => {
     const prompt = promptInput.value?.trim();
@@ -381,18 +404,21 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
     const payload = {
       prompt,
       page: { url: window.location.href, title: document.title },
-      connections: state.edges.map((edge) => {
+      slotIds: state.slotIds,
+      connections: state.slotIds.flatMap((slotId) => {
+        const edge = getEdgeBySlot(state, slotId);
+        if (!edge) return [];
         const t = getTargetById(state, edge.target);
         return t
-          ? {
-              slotId: edge.slotId,
-              slotTitle: state.slotTitles[edge.slotId],
+          ? [{
+              slotId,
+              slotTitle: state.slotTitles[slotId] ?? slotId,
               targetType: t.targetType,
               meta: t.meta,
               id: t.id,
-            }
-          : null;
-      }).filter(Boolean) as Array<{
+            }]
+          : [];
+      }) as Array<{
         slotId: ConnectionSlotId;
         slotTitle: string;
         targetType: string;
@@ -421,23 +447,31 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
           resultImageWrap.innerHTML = '';
           resultImageWrap.style.display = 'none';
         }
-        if (r.imageDescriptions?.length && resultImageDescriptions && resultImageDescriptionsList) {
+        if (resultImageDescriptions && resultImageDescriptionsList) {
+          const orderedSlotIds = state.slotIds.filter((slotId) => getEdgeBySlot(state, slotId));
           const summaryEl = resultImageDescriptions.querySelector('summary');
-          if (summaryEl) summaryEl.textContent = `Image descriptions (${r.imageDescriptions.length})`;
+          if (summaryEl) summaryEl.textContent = `Descriptions (${orderedSlotIds.length})`;
           resultImageDescriptionsList.innerHTML = '';
-          r.imageDescriptions.forEach((desc, i) => {
+          orderedSlotIds.forEach((slotId, i) => {
             const block = document.createElement('div');
             block.className = 'result-image-desc-item';
+            const slotTitle = state.slotTitles[slotId] ?? slotId;
             const h = document.createElement('strong');
-            h.textContent = `Image ${i + 1}:`;
+            h.textContent = `${slotTitle}: `;
             block.appendChild(h);
-            block.appendChild(document.createTextNode(' ' + desc));
+            let text = r.imageDescriptions?.[i] ?? '—';
+            if (text !== '—' && slotTitle) {
+              const prefix = slotTitle + ': ';
+              if (text.startsWith(prefix)) text = text.slice(prefix.length);
+              else if (text.toLowerCase().startsWith(slotTitle.toLowerCase() + ': ')) {
+                text = text.slice(slotTitle.length + 2);
+              }
+            }
+            block.appendChild(document.createTextNode(text));
             resultImageDescriptionsList.appendChild(block);
           });
           resultImageDescriptions.style.display = 'block';
           resultImageDescriptions.setAttribute('open', '');
-        } else if (resultImageDescriptions) {
-          resultImageDescriptions.style.display = 'none';
         }
         if (r.generatedPrompt) {
           resultPromptText.textContent = r.generatedPrompt;
@@ -446,24 +480,14 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
         } else {
           resultPromptToggle.style.display = 'none';
         }
-        if (r.imageUrl && r.generatedPrompt) {
-          resultTextEl.style.display = 'none';
-        } else {
-          const lines: string[] = [];
-          if (r.summary) lines.push(r.summary);
-          if (r.styleSignals?.length) lines.push('\nStyle: ' + r.styleSignals.join(', '));
-          if (!r.imageUrl && r.generatedPrompt) {
-            lines.push('\n\n(Image generation — OpenAI only)');
-          }
-          resultTextEl.textContent = lines.length ? lines.join('') : (r.text ?? 'Done.');
-          resultTextEl.style.display = 'block';
-        }
+        resultTextEl.style.display = 'none';
       } else {
         resultImageWrap.innerHTML = '';
         resultImageWrap.style.display = 'none';
         if (resultImageDescriptions) resultImageDescriptions.style.display = 'none';
         resultPromptToggle.style.display = 'none';
         resultTextEl.textContent = response?.error ?? 'Error';
+        resultTextEl.style.display = 'block';
         resultEl.classList.add('error');
       }
       resultEl.style.display = 'block';
@@ -473,6 +497,7 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
       if (resultImageDescriptions) resultImageDescriptions.style.display = 'none';
       resultPromptToggle.style.display = 'none';
       resultTextEl.textContent = String(err);
+      resultTextEl.style.display = 'block';
       resultEl.classList.add('error');
       resultEl.style.display = 'block';
     }
@@ -523,9 +548,8 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
   /* MutationObserver отключён: на Pinterest DOM меняется постоянно (лента, lazy-load),
      наблюдение за body вызывает тяжёлую работу и зависания. Пересчёт позиций — только по scroll/resize. */
 
-  syncSlotTitleInputs();
+  renderSlots();
   updateConnectionsList();
-  renderRopes();
 
   return { root, shadow, getState, setState };
 }

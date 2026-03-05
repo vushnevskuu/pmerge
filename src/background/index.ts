@@ -9,7 +9,7 @@ import type {
   AssistantSendErrorPayload,
   AssistantErrorCode,
 } from '../shared/types';
-import { MESSAGE_TYPES, CONNECTION_SLOT_IDS } from '../shared/types';
+import { MESSAGE_TYPES } from '../shared/types';
 import { VISUAL_ANALYSIS_INSTRUCTIONS } from './visualInstructions';
 
 const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
@@ -35,8 +35,9 @@ function getConnectionsBySlotOrder(payload: AssistantSendRequestPayload): Array<
     const slotId = (c as { slotId?: string }).slotId;
     if (slotId) bySlot.set(slotId, c as (typeof payload.connections)[0] & { slotId: string });
   }
+  const slotIds = payload.slotIds ?? [];
   const ordered: Array<(typeof payload.connections)[0] & { slotId: string }> = [];
-  for (const slotId of CONNECTION_SLOT_IDS) {
+  for (const slotId of slotIds) {
     const c = bySlot.get(slotId);
     if (c) ordered.push({ ...c, slotId });
   }
@@ -78,7 +79,7 @@ function buildMessages(payload: AssistantSendRequestPayload): Array<{ role: 'sys
 
   const textParts: string[] = [];
   textParts.push(`Page: ${payload.page.title} (${payload.page.url})\n`);
-  textParts.push(`User prompt (theme/goal): ${payload.prompt}\n`);
+  textParts.push(`USER PROMPT (MAIN SUBJECT — the image MUST depict this): "${payload.prompt}"\n`);
   if (ordered.length > 0) {
     textParts.push('Structured connections — extract ONLY the specified aspect from each image:\n');
     ordered.forEach((c, i) => {
@@ -102,23 +103,37 @@ function buildMessages(payload: AssistantSendRequestPayload): Array<{ role: 'sys
   }
   const userText = textParts.join('\n');
 
+  const slotTitlesList = ordered.map((c) => (c as { slotTitle?: string }).slotTitle || c.slotId).join(', ');
   const systemPrompt = hasImages
     ? `${VISUAL_ANALYSIS_INSTRUCTIONS}
 
-Each image is linked to a specific slot (composition, tone, palette, theme). The slotTitle tells you what to extract from that image.
+Each image is linked to a specific slot. The slotTitle tells you what to extract from that image. Slots in this request: ${slotTitlesList}
 
-CRITICAL: For each image, extract ONLY the aspect of its slot:
-- Composition slot: describe ONLY composition (layout, framing, balance, symmetry, perspective, lines).
-- Tone slot: describe ONLY tone/mood (atmosphere, emotion, feeling, vibe).
-- Palette slot: describe ONLY palette (colors, saturation, contrast, color harmony).
-- Theme slot: describe ONLY theme/subject (what the image is about, main subject).
+CRITICAL: For each image, extract ONLY the aspect of its slot. Common slots:
+- Composition: layout, framing, balance, symmetry, perspective, lines.
+- Tone: atmosphere, emotion, feeling, vibe.
+- Palette: colors, saturation, contrast, color harmony.
+- Theme: subject, main topic.
+- Font/Typography: typeface, letterforms, style, weight, decorative elements.
+- Any other slotTitle: extract that specific aspect from the image.
 
 imageDescriptions[i] = the extracted aspect for image i (not a full description).
 
-generatedPrompt: a SELF-CONTAINED prompt for image generation. Embed the extracted descriptions directly — composition, tone, palette — plus the user's theme. NO phrases like "take composition from image 1", "tone from the second image", "from image 3". The prompt goes to DALL-E or similar; source images are NOT attached. Write as if describing the desired image: "An image of [theme]. Composition: [embed composition desc]. Mood: [embed tone desc]. Colors: [embed palette desc]."
+generatedPrompt: CRITICAL — the image must depict the USER'S PROMPT as the main subject. The attached images provide STYLE/ASPECTS to apply, NOT the subject.
+- If user wrote "пицца" (pizza) → the image is OF PIZZA, styled with composition/palette/tone from the sources.
+- If user wrote "черепаха" (turtle) → the image is OF A TURTLE, styled with the extracted aspects.
+- NEVER describe the content of the source images as the main subject. Extract their composition, palette, tone — then APPLY those to the user's subject.
 
-Reply in JSON: imageDescriptions (array of strings, one per image — slot-specific extraction), summary, styleSignals (array), generatedPrompt (self-contained, no image references). Use the same language as the user's prompt.`
-    : 'You are an assistant that helps users create image concepts. Given a prompt and context from linked web page elements (e.g. image URLs, alt text, captions), respond with a short summary, style/mood signals, and a generated image prompt that captures the "vibe" for the requested theme. Reply in JSON with keys: summary, styleSignals (array of strings), generatedPrompt.';
+RULES:
+1. MAIN SUBJECT = user prompt. The generated image depicts what the user asked for.
+2. Apply extracted aspects (composition, palette, tone) FROM the sources TO the user's subject.
+3. ENGLISH only. MINIMUM 200 words. Be EXTREMELY detailed — describe composition (framing, perspective, balance, symmetry, negative space), palette (exact colors, saturation, contrast, gradients), lighting (direction, soft/hard, shadows), mood (atmosphere, emotion), textures, style. No shortcuts.
+4. NO "image 1", "take from". Self-contained for DALL-E.
+
+Example: User "pizza" → "An image of a pizza as the central subject. Composition: [2-3 sentences on layout, framing, perspective]. Palette: [2-3 sentences on colors, tones, contrast]. Lighting: [1-2 sentences]. Mood: [1-2 sentences]. The pizza must be the clear main subject."
+
+Reply in JSON: imageDescriptions, summary, styleSignals, generatedPrompt.`
+    : 'You are an assistant that helps users create image concepts. Given a prompt and context from linked web page elements (e.g. image URLs, alt text, captions), respond with a short summary, style/mood signals, and a generated image prompt. Reply in JSON with keys: summary, styleSignals (array of strings), generatedPrompt. generatedPrompt MUST be in ENGLISH and maximally detailed (150-300 words).';
 
   let userContent: MessageContent = userText;
   if (hasImages) {
@@ -202,13 +217,33 @@ async function callAPI(
       ? (parsed.imageDescriptions as string[]).filter((s): s is string => typeof s === 'string')
       : undefined;
     let generatedPrompt = typeof parsed.generatedPrompt === 'string' ? parsed.generatedPrompt : undefined;
-    if (!generatedPrompt && content) {
-      const m = content.match(/"generatedPrompt"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-      if (m) generatedPrompt = m[1].replace(/\\"/g, '"');
+    if (!generatedPrompt && typeof (parsed as { prompt?: string }).prompt === 'string') {
+      generatedPrompt = (parsed as { prompt: string }).prompt;
     }
     if (!generatedPrompt && content) {
-      const m = content.match(/\*\*Generated Image Prompt\*\*[:\s]*([^\n*]+)/i);
+      const m = content.match(/"generatedPrompt"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (m) generatedPrompt = m[1].replace(/\\"/g, '"').replace(/\\n/g, '\n');
+    }
+    if (!generatedPrompt && content) {
+      const m = content.match(/"prompt"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (m) generatedPrompt = m[1].replace(/\\"/g, '"').replace(/\\n/g, '\n');
+    }
+    if (!generatedPrompt && content) {
+      const m = content.match(/\*\*Generated Image Prompt\*\*[:\s]*([\s\S]*?)(?=\n\s*\*\*|\n\s*"|$)/i);
       if (m) generatedPrompt = m[1].trim();
+    }
+    if (!generatedPrompt && imageDescriptions?.length) {
+      const ordered = getConnectionsBySlotOrder(payload);
+      if (ordered.length > 0) {
+        const parts: string[] = [`Create an image of ${payload.prompt}. Apply the following aspects from the reference images:`];
+        ordered.forEach((c, i) => {
+          const slotTitle = (c as { slotTitle?: string }).slotTitle || c.slotId;
+          const desc = imageDescriptions[i] ?? '';
+          if (desc) parts.push(`${slotTitle}: ${desc}`);
+        });
+        if (styleSignals?.length) parts.push(`Style: ${styleSignals.join(', ')}.`);
+        generatedPrompt = parts.join('\n\n');
+      }
     }
     return {
       summary,
@@ -219,14 +254,27 @@ async function callAPI(
     };
   } catch {
     const fallback = extractFromText(content);
-    return fallback ?? { text: content };
+    const result = fallback ?? { text: content };
+    if (!result.generatedPrompt && result.imageDescriptions?.length) {
+      const ordered = getConnectionsBySlotOrder(payload);
+      const parts: string[] = [`Create an image of ${payload.prompt}. Apply the following aspects from the reference images:`];
+      ordered.forEach((c, i) => {
+        const slotTitle = (c as { slotTitle?: string }).slotTitle || c.slotId;
+        const desc = result.imageDescriptions![i] ?? '';
+        if (desc) parts.push(`${slotTitle}: ${desc}`);
+      });
+      if (result.styleSignals?.length) parts.push(`Style: ${result.styleSignals.join(', ')}.`);
+      result.generatedPrompt = parts.join('\n\n');
+    }
+    return result;
   }
 }
 
 function extractFromText(text: string): AssistantSendSuccessPayload['result'] | null {
   if (!text?.trim()) return null;
   const summary = text.match(/(?:summary|Summary|\*\*Summary\*\*)[:\s]*([^\n*]+)/i)?.[1]?.trim();
-  const prompt = text.match(/(?:generatedPrompt|Generated Image Prompt|\*\*Generated Image Prompt\*\*)[:\s]*([^\n*]+)/i)?.[1]?.trim();
+  let prompt = text.match(/"generatedPrompt"\s*:\s*"((?:[^"\\]|\\.)*)"/)?.[1]?.replace(/\\"/g, '"').replace(/\\n/g, '\n');
+  if (!prompt) prompt = text.match(/(?:generatedPrompt|Generated Image Prompt|\*\*Generated Image Prompt\*\*)[:\s]*([^\n*]+)/i)?.[1]?.trim();
   const styleMatch = text.match(/(?:styleSignals|Style)[:\s]*\[([^\]]+)\]/i);
   const styleSignals = styleMatch
     ? styleMatch[1].split(',').map((s) => s.replace(/^["'\s]+|["'\s]+$/g, '').trim()).filter(Boolean)

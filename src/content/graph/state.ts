@@ -2,21 +2,27 @@
  * Graph state: assistant node, targets, edges, slot titles.
  */
 
-import type { GraphState, GraphTarget, GraphEdge, AssistantNode, ConnectionSlotId, SlotTitles } from '../../shared/types';
-import { DEFAULT_SLOT_TITLES } from '../../shared/types';
+import type { GraphState, GraphTarget, GraphEdge, AssistantNode, ConnectionSlotId } from '../../shared/types';
+import { DEFAULT_SLOT_IDS, DEFAULT_SLOT_TITLES, SLOT_ADD_LABELS } from '../../shared/types';
 import type { ExtractedTarget } from '../targeting/extract';
 import { resolveTarget } from '../targeting/locators';
 
 const ASSISTANT_ID = 'assistant_main';
 
 export function createInitialState(pageUrl: string): GraphState {
+  const slotIds = [...DEFAULT_SLOT_IDS];
+  const slotTitles: Record<string, string> = {};
+  slotIds.forEach((id) => {
+    slotTitles[id] = DEFAULT_SLOT_TITLES[id] ?? id;
+  });
   return {
     projectId: 'project_' + Date.now(),
     pageUrl,
     assistantNode: { id: ASSISTANT_ID, position: { x: 120, y: 80 } },
     targets: [],
     edges: [],
-    slotTitles: { ...DEFAULT_SLOT_TITLES },
+    slotIds,
+    slotTitles,
   };
 }
 
@@ -49,7 +55,16 @@ export function getEdgeBySlot(state: GraphState, slotId: ConnectionSlotId): Grap
 }
 
 export function setSlotTitle(state: GraphState, slotId: ConnectionSlotId, title: string): void {
-  state.slotTitles[slotId] = title.trim() || DEFAULT_SLOT_TITLES[slotId];
+  state.slotTitles[slotId] = title.trim() || (DEFAULT_SLOT_TITLES[slotId] ?? slotId);
+}
+
+export function addSlot(state: GraphState): ConnectionSlotId {
+  const n = state.slotIds.length;
+  const label = SLOT_ADD_LABELS[n] ?? `Slot ${n + 1}`;
+  const id = n === 3 ? 'theme' : `slot_${n}`;
+  state.slotIds.push(id);
+  state.slotTitles[id] = label;
+  return id;
 }
 
 export function removeEdge(state: GraphState, edgeId: string): void {
