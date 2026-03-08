@@ -8,10 +8,12 @@ const PROVIDER_ID = 'provider';
 const SAVE_ID = 'save';
 const STATUS_ID = 'status';
 const STORAGE_KEY = 'ai_assistant_settings';
+const EXPAND_SHORT_ID = 'expand-short-prompts';
 
 interface StoredSettings {
   apiKey?: string;
   provider?: 'openai' | 'groq';
+  expandShortPrompts?: boolean;
 }
 
 function updateProviderUI(provider: string): void {
@@ -34,11 +36,13 @@ async function load(): Promise<void> {
   const s = raw[STORAGE_KEY] as StoredSettings | undefined;
   const input = document.getElementById(API_KEY_ID) as HTMLInputElement | null;
   const providerSelect = document.getElementById(PROVIDER_ID) as HTMLSelectElement | null;
+  const expandCheck = document.getElementById(EXPAND_SHORT_ID) as HTMLInputElement | null;
   if (input) input.value = s?.apiKey ?? '';
   if (providerSelect) {
     providerSelect.value = s?.provider ?? 'groq';
     updateProviderUI(providerSelect.value);
   }
+  if (expandCheck) expandCheck.checked = s?.expandShortPrompts !== false;
 }
 
 function showStatus(text: string, isError = false): void {
@@ -52,10 +56,12 @@ function showStatus(text: string, isError = false): void {
 async function save(): Promise<void> {
   const input = document.getElementById(API_KEY_ID) as HTMLInputElement | null;
   const providerSelect = document.getElementById(PROVIDER_ID) as HTMLSelectElement | null;
+  const expandCheck = document.getElementById(EXPAND_SHORT_ID) as HTMLInputElement | null;
   const key = input?.value?.trim() ?? '';
   const provider = (providerSelect?.value as 'openai' | 'groq') ?? 'groq';
+  const expandShortPrompts = expandCheck?.checked ?? false;
   await chrome.storage.local.set({
-    [STORAGE_KEY]: { apiKey: key, provider } as StoredSettings,
+    [STORAGE_KEY]: { apiKey: key, provider, expandShortPrompts } as StoredSettings,
   });
   showStatus('Settings saved.');
 }

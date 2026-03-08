@@ -2,18 +2,19 @@
  * Graph state: assistant node, targets, edges, slot titles.
  */
 
-import type { GraphState, GraphTarget, GraphEdge, AssistantNode, ConnectionSlotId } from '../../shared/types';
-import { DEFAULT_SLOT_IDS, DEFAULT_SLOT_TITLES, SLOT_ADD_LABELS } from '../../shared/types';
+import type { GraphState, GraphTarget, GraphEdge, AssistantNode, ConnectionSlotId, AssistantMode } from '../../shared/types';
+import { DEFAULT_SLOT_IDS, DEFAULT_SLOT_TITLES, MERGE_DEFAULT_SLOT_IDS, MERGE_DEFAULT_SLOT_TITLES, SLOT_ADD_LABELS } from '../../shared/types';
 import type { ExtractedTarget } from '../targeting/extract';
 import { resolveTarget } from '../targeting/locators';
 
 const ASSISTANT_ID = 'assistant_main';
 
 export function createInitialState(pageUrl: string): GraphState {
-  const slotIds = [...DEFAULT_SLOT_IDS];
+  const mode: AssistantMode = 'merge';
+  const slotIds = [...MERGE_DEFAULT_SLOT_IDS];
   const slotTitles: Record<string, string> = {};
   slotIds.forEach((id) => {
-    slotTitles[id] = DEFAULT_SLOT_TITLES[id] ?? id;
+    slotTitles[id] = MERGE_DEFAULT_SLOT_TITLES[id] ?? id;
   });
   return {
     projectId: 'project_' + Date.now(),
@@ -23,7 +24,26 @@ export function createInitialState(pageUrl: string): GraphState {
     edges: [],
     slotIds,
     slotTitles,
+    mode,
   };
+}
+
+export function setMode(state: GraphState, mode: AssistantMode): void {
+  state.mode = mode;
+  state.edges = [];
+  if (mode === 'merge') {
+    state.slotIds = [...MERGE_DEFAULT_SLOT_IDS];
+    state.slotTitles = {};
+    state.slotIds.forEach((id) => {
+      state.slotTitles[id] = MERGE_DEFAULT_SLOT_TITLES[id] ?? id;
+    });
+  } else {
+    state.slotIds = [...DEFAULT_SLOT_IDS];
+    state.slotTitles = {};
+    state.slotIds.forEach((id) => {
+      state.slotTitles[id] = DEFAULT_SLOT_TITLES[id] ?? id;
+    });
+  }
 }
 
 export function addTarget(state: GraphState, extracted: ExtractedTarget): GraphTarget {
@@ -60,8 +80,8 @@ export function setSlotTitle(state: GraphState, slotId: ConnectionSlotId, title:
 
 export function addSlot(state: GraphState): ConnectionSlotId {
   const n = state.slotIds.length;
-  const label = SLOT_ADD_LABELS[n] ?? `Slot ${n + 1}`;
-  const id = n === 3 ? 'theme' : `slot_${n}`;
+  const label = state.mode === 'merge' ? `Port ${n + 1}` : SLOT_ADD_LABELS[n] ?? `Slot ${n + 1}`;
+  const id = state.mode === 'merge' ? `port_${n}` : n === 3 ? 'theme' : `slot_${n}`;
   state.slotIds.push(id);
   state.slotTitles[id] = label;
   return id;

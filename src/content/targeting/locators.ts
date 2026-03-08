@@ -95,9 +95,71 @@ export function resolveByLocator(locator: Locator, doc: Document): Element | nul
   }
 }
 
+function matchesTargetMeta(el: Element, target: GraphTarget): boolean {
+  const { meta } = target;
+  if (el instanceof HTMLImageElement) {
+    const src = el.currentSrc || el.src;
+    if (meta.src && src) {
+      try {
+        const a = new URL(meta.src);
+        const b = new URL(src);
+        if (a.pathname === b.pathname || a.href === b.href) return true;
+      } catch {
+        if (src === meta.src) return true;
+      }
+    }
+    const anchor = el.closest('a');
+    if (meta.href && anchor?.href === meta.href) return true;
+  }
+  const anchor = el.closest('a');
+  if (anchor && meta.href && anchor.href === meta.href) return true;
+  return !meta.src && !meta.href;
+}
+
+function resolveByHref(target: GraphTarget, doc: Document): Element | null {
+  const href = target.meta?.href;
+  if (!href) return null;
+  const anchors = doc.querySelectorAll('a[href]');
+  for (const a of anchors) {
+    if (a.href !== href) continue;
+    const img = a.querySelector('img');
+    if (img && target.targetType === 'image') return img;
+    if (target.targetType === 'link') return a;
+    if (img) return img;
+    return a;
+  }
+  return null;
+}
+
+function resolveByRect(target: GraphTarget, doc: Document): Element | null {
+  const { rect } = target;
+  if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+  const cx = rect.x + rect.width / 2 - (typeof window !== 'undefined' ? window.scrollX : 0);
+  const cy = rect.y + rect.height / 2 - (typeof window !== 'undefined' ? window.scrollY : 0);
+  const el = doc.elementFromPoint(cx, cy);
+  if (!el || el === doc.body) return null;
+  const img = el instanceof HTMLImageElement ? el : el.querySelector('img');
+  if (img && target.targetType === 'image' && matchesTargetMeta(img, target)) return img;
+  if (el.closest('a') && target.meta?.href) {
+    const a = el.closest('a')!;
+    if (a.href === target.meta.href) return a.querySelector('img') || a;
+  }
+  return img || el;
+}
+
 /**
- * Разрешает цель по locator. Поиск по src отключён — querySelectorAll('img') на Pinterest тормозит страницу.
+ * Разрешает цель: locator → проверка по meta → fallback по href → fallback по rect.
+ * На Pinterest DOM переиспользуется — querySelector часто возвращает не тот пин.
  */
 export function resolveTarget(target: GraphTarget, doc: Document): Element | null {
-  return resolveByLocator(target.locator, doc);
+  const byLocator = resolveByLocator(target.locator, doc);
+  if (byLocator && matchesTargetMeta(byLocator, target)) return byLocator;
+
+  const byHref = resolveByHref(target, doc);
+  if (byHref) return byHref;
+
+  const byRect = resolveByRect(target, doc);
+  if (byRect && matchesTargetMeta(byRect, target)) return byRect;
+
+  return null;
 }

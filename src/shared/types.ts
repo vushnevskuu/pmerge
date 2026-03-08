@@ -30,13 +30,26 @@ export type TargetType = 'image' | 'link' | 'text' | 'element';
 
 export type ConnectionSlotId = string;
 
+export type AssistantMode = 'merge' | 'compile';
+
 export const DEFAULT_SLOT_IDS: ConnectionSlotId[] = ['composition', 'tone', 'palette'];
+
+export const MERGE_DEFAULT_SLOT_IDS: ConnectionSlotId[] = ['character', 'material', 'color'];
 
 export const DEFAULT_SLOT_TITLES: Record<string, string> = {
   composition: 'Composition',
   tone: 'Tone',
   palette: 'Palette',
   theme: 'Theme',
+  character: 'Character',
+  material: 'Material',
+  color: 'Color',
+};
+
+export const MERGE_DEFAULT_SLOT_TITLES: Record<string, string> = {
+  character: 'Character',
+  material: 'Material',
+  color: 'Color',
 };
 
 export const SLOT_ADD_LABELS: Record<number, string> = {
@@ -82,10 +95,12 @@ export interface GraphState {
   edges: GraphEdge[];
   slotIds: ConnectionSlotId[];
   slotTitles: Record<string, string>;
+  mode: AssistantMode;
 }
 
 export interface AssistantSendRequestPayload {
-  prompt: string;
+  mode: AssistantMode;
+  prompt?: string;
   page: { url: string; title: string };
   slotIds: ConnectionSlotId[];
   connections: Array<{

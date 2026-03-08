@@ -24,9 +24,12 @@
       <option value="groq">Groq (free, Llama)</option>
       <option value="openai">OpenAI (paid, image generation)</option>
     </select>
+    <p class="hint">For Merge mode: OpenAI gives fewer typos and more accurate prompt length.</p>
     <label for="api-key" id="api-key-label">Groq API Key</label>
     <input type="password" id="api-key" placeholder="gsk_..." autocomplete="off">
     <p class="hint" id="api-hint">Free key: <a href="https://console.groq.com" target="_blank">console.groq.com</a></p>
+    <label><input type="checkbox" id="expand-short-prompts"> Expand short prompts (Merge: 2nd API call if &lt;200 words)</label>
+    <p class="hint">Enabled by default. Uses extra API request. Recommended for Groq.</p>
     <button type="submit" id="save">Save</button>
   </form>
   <p id="status"></p>

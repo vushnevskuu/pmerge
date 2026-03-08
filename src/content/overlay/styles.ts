@@ -43,31 +43,65 @@ export const overlayStyles = `
     border-radius: 12px;
     box-shadow: 0 8px 32px rgba(0,0,0,0.12), 0 0 0 1px rgba(255,255,255,0.6) inset;
     border: 1px solid rgba(255, 255, 255, 0.5);
-    overflow: hidden;
+    overflow: visible;
     isolation: isolate;
   }
+  .assistant-wrap { cursor: grab; user-select: none; }
+  .assistant-wrap:active { cursor: grabbing; }
+  .assistant-wrap button, .assistant-wrap input, .assistant-wrap textarea, .assistant-wrap select { cursor: default; user-select: auto; }
   .assistant-header {
     padding: 10px 14px;
     background: rgba(249, 250, 251, 0.6);
     -webkit-backdrop-filter: blur(8px);
     backdrop-filter: blur(8px);
     border-bottom: 1px solid rgba(229, 231, 235, 0.8);
-    cursor: grab;
-    user-select: none;
-    touch-action: none;
+    border-radius: 12px 12px 0 0;
     display: flex;
     align-items: center;
     gap: 8px;
   }
-  .assistant-header:active { cursor: grabbing; }
-  .assistant-header::before {
-    content: "⋮⋮";
-    font-size: 14px;
-    color: #9ca3af;
-    letter-spacing: -2px;
+  .mode-switcher {
+    display: flex;
+    gap: 2px;
+    pointer-events: auto;
   }
-  .assistant-title { font-weight: 600; color: #111; flex: 1; }
-  .assistant-header .drag-hint { font-size: 11px; color: #9ca3af; }
+  .mode-btn {
+    padding: 4px 8px;
+    font-size: 11px;
+    border: none;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.35);
+    color: #6b7280;
+    cursor: pointer;
+    font: inherit;
+  }
+  .mode-btn:hover { background: rgba(243, 244, 246, 0.6); color: #374151; }
+  .mode-btn.active {
+    background: rgba(71, 85, 105, 0.55);
+    color: #fff;
+  }
+  .header-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .assistant-header .drag-hint { font-size: 12px; color: #9ca3af; }
+  .close-btn {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    font-size: 18px;
+    line-height: 1;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: #6b7280;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .close-btn:hover {
+    background: rgba(229, 231, 235, 0.9);
+    color: #374151;
+  }
   .assistant-body { padding: 14px; }
   .assistant-body textarea {
     width: 100%;
@@ -84,8 +118,9 @@ export const overlayStyles = `
     border-color: #2563eb;
     box-shadow: 0 0 0 2px rgba(37,99,235,0.2);
   }
-  .send-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  .send-row { display: flex; margin-top: 18px; }
   .send-btn {
+    width: 100%;
     padding: 8px 16px;
     background: #2563eb;
     color: #fff;
@@ -104,18 +139,20 @@ export const overlayStyles = `
     margin-top: 10px;
   }
   .slot {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 8px;
+    padding: 4px 8px 4px 8px;
     background: rgba(243, 244, 246, 0.6);
     border-radius: 8px;
     border: 1px solid rgba(229, 231, 235, 0.8);
     width: 100%;
     max-width: 100%;
+    font-size: 12px;
   }
   .slot-add-btn {
-    margin-top: 6px;
+    margin: 6px auto 0;
     width: 28px;
     height: 28px;
     padding: 0;
@@ -135,6 +172,10 @@ export const overlayStyles = `
     color: #374151;
   }
   .port-dot {
+    position: absolute;
+    left: -24px;
+    top: 50%;
+    transform: translateY(-50%);
     width: 16px;
     height: 16px;
     min-width: 16px;
@@ -160,18 +201,6 @@ export const overlayStyles = `
     border-color: rgba(229, 231, 235, 0.9);
     outline: none;
   }
-  .connections-list { margin-top: 8px; font-size: 12px; }
-  .connections-list summary { cursor: pointer; color: #6b7280; }
-  .connection-slot {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-top: 4px;
-  }
-  .connection-slot-title { color: #6b7280; font-weight: 500; }
-  .connection-slot-label { flex: 1; color: #374151; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
-  .connection-slot button { padding: 2px 6px; font-size: 11px; cursor: pointer; color: #dc2626; background: rgba(255,255,255,0.5); border: 1px solid rgba(229, 231, 235, 0.9); border-radius: 4px; flex-shrink: 0; }
-  .connection-slot button:hover { background: #fef2f2; }
   .status { margin-top: 10px; font-size: 12px; color: #6b7280; min-height: 1.2em; }
   .result {
     margin-top: 10px;
@@ -211,10 +240,30 @@ export const overlayStyles = `
     margin-top: 8px;
     font-size: 12px;
   }
+  .prompt-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
   .result-prompt-toggle summary {
     cursor: pointer;
     color: #6b7280;
     user-select: none;
+  }
+  .copy-prompt-btn {
+    padding: 2px 8px;
+    font-size: 12px;
+    border: none;
+    border-radius: 4px;
+    background: rgba(71, 85, 105, 0.2);
+    color: #475569;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .copy-prompt-btn:hover {
+    background: rgba(71, 85, 105, 0.35);
+    color: #334155;
   }
   .result-prompt-text {
     margin: 6px 0 0;

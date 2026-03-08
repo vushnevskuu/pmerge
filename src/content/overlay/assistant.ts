@@ -14,6 +14,7 @@ import {
   setAssistantPosition,
   setSlotTitle,
   addSlot,
+  setMode,
   revalidateTargets,
   updateTargetRect,
   getTargetById,
@@ -39,27 +40,34 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
   const shadow = root.attachShadow({ mode: 'closed' });
   shadow.innerHTML = `
     <style>${overlayStyles}</style>
-    <div class="assistant-wrap" data-assistant-window>
-      <div class="assistant-header" data-drag-handle title="Drag to move">
-        <span class="assistant-title">AI Assistant</span>
-        <span class="drag-hint">drag</span>
+    <div class="assistant-wrap" data-assistant-window data-drag-handle>
+      <div class="assistant-header">
+        <div class="mode-switcher" data-mode-switcher>
+          <button type="button" class="mode-btn active" data-mode="merge">1</button>
+          <button type="button" class="mode-btn" data-mode="compile">2</button>
+        </div>
+        <div class="header-right">
+          <span class="drag-hint">merger</span>
+          <button type="button" class="close-btn" data-close title="Close">×</button>
+        </div>
       </div>
       <div class="assistant-body">
-        <textarea data-prompt placeholder="e.g. make an image with this vibe on the theme of a cosmic cafe"></textarea>
-        <div class="send-row">
-          <button type="button" class="send-btn" data-send>Send</button>
+        <div class="prompt-wrap" data-prompt-wrap>
+          <textarea data-prompt placeholder="e.g. make an image with this vibe on the theme of a cosmic cafe"></textarea>
         </div>
         <div class="slots" data-slots></div>
         <button type="button" class="slot-add-btn" data-slot-add title="Add slot">+</button>
-        <details class="connections-list" data-connections-list>
-          <summary>Connections</summary>
-          <div data-connections-items></div>
-        </details>
+        <div class="send-row">
+          <button type="button" class="send-btn" data-send>Merge</button>
+        </div>
         <div class="status" data-status></div>
         <div class="result" data-result style="display:none">
           <div class="result-image-wrap" data-result-image></div>
           <details class="result-prompt-toggle" data-result-prompt-toggle>
-            <summary>Prompt</summary>
+            <summary class="prompt-summary">
+              <span>Prompt</span>
+              <button type="button" class="copy-prompt-btn" data-copy-prompt title="Copy prompt">Copy</button>
+            </summary>
             <pre class="result-prompt-text" data-result-prompt-text></pre>
           </details>
           <details class="result-image-descriptions" data-result-image-descriptions>
@@ -91,7 +99,9 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
   updateSvgViewBox();
   const windowEl = shadow.querySelector('[data-assistant-window]') as HTMLElement;
   const dragHandle = shadow.querySelector('[data-drag-handle]') as HTMLElement;
+  const DRAG_EXCLUDE = 'button, input, textarea, select, [data-port], .slot-title, [data-close], [data-slot-add], [data-send], [data-mode-switcher] button, details summary, .connection-slot button, [data-copy-prompt], a';
   const slotsContainer = shadow.querySelector('[data-slots]') as HTMLElement;
+  const promptWrap = shadow.querySelector('[data-prompt-wrap]') as HTMLElement;
   const promptInput = shadow.querySelector('[data-prompt]') as HTMLTextAreaElement;
   const sendBtn = shadow.querySelector('[data-send]') as HTMLButtonElement;
   const statusEl = shadow.querySelector('[data-status]') as HTMLElement;
@@ -103,9 +113,17 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
   const resultPromptText = shadow.querySelector('[data-result-prompt-text]') as HTMLElement;
   const resultTextEl = shadow.querySelector('[data-result-text]') as HTMLElement;
   const highlightEl = shadow.querySelector('[data-highlight]') as HTMLElement;
-  const connectionsList = shadow.querySelector('[data-connections-list]') as HTMLDetailsElement;
-  const connectionsItems = shadow.querySelector('[data-connections-items]') as HTMLElement;
+  const connectionsItems = shadow.querySelector('[data-connections-items]') as HTMLElement | null;
   const slotAddBtn = shadow.querySelector('[data-slot-add]') as HTMLButtonElement;
+  const modeSwitcher = shadow.querySelector('[data-mode-switcher]') as HTMLElement;
+
+  function updateModeUI() {
+    if (promptWrap) promptWrap.style.display = state.mode === 'merge' ? 'none' : 'block';
+    modeSwitcher?.querySelectorAll('.mode-btn').forEach((btn) => {
+      const m = (btn as HTMLElement).getAttribute('data-mode');
+      btn.classList.toggle('active', m === state.mode);
+    });
+  }
 
   function renderSlots() {
     if (!slotsContainer) return;
@@ -221,16 +239,30 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
       }
     } catch (_) {}
     if (!windowEl.style.left) {
-      windowEl.style.left = state.assistantNode.position.x + 'px';
-      windowEl.style.top = state.assistantNode.position.y + 'px';
+      const margin = 16;
+      const w = windowEl.getBoundingClientRect().width || 340;
+      const x = Math.max(0, window.innerWidth - w - margin);
+      const y = margin;
+      windowEl.style.left = x + 'px';
+      windowEl.style.top = y + 'px';
+      setAssistantPosition(state, x, y);
     }
   }
 
   loadSavedPosition();
 
+  const closeBtn = shadow.querySelector('[data-close]') as HTMLButtonElement;
+  if (closeBtn) {
+    closeBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      root.style.display = 'none';
+    });
+  }
+
   let dragStartX = 0, dragStartY = 0, windowStartX = 0, windowStartY = 0;
   dragHandle.addEventListener('pointerdown', (e) => {
-    if ((e.target as HTMLElement).closest('[data-port]')) return;
+    if ((e.target as HTMLElement).closest(DRAG_EXCLUDE)) return;
     e.preventDefault();
     e.stopPropagation();
     const rect = windowEl.getBoundingClientRect();
@@ -384,6 +416,19 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
       document.addEventListener('pointercancel', onUp);
     });
   }
+  modeSwitcher?.querySelectorAll('.mode-btn').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const m = (btn as HTMLElement).getAttribute('data-mode') as 'merge' | 'compile';
+      if (m && m !== state.mode) {
+        setMode(state, m);
+        renderSlots();
+        updateConnectionsList();
+        updateModeUI();
+      }
+    });
+  });
+
   slotAddBtn?.addEventListener('click', () => {
     addSlot(state);
     renderSlots();
@@ -391,8 +436,10 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
   });
 
   sendBtn.addEventListener('click', async () => {
-    const prompt = promptInput.value?.trim();
-    if (!prompt) return;
+    const prompt = promptInput?.value?.trim();
+    if (state.mode === 'compile' && !prompt) return;
+    const hasConnections = state.slotIds.some((id) => getEdgeBySlot(state, id));
+    if (state.mode === 'merge' && !hasConnections) return;
     statusEl.textContent = 'Sending…';
     if (resultImageWrap) resultImageWrap.innerHTML = '';
     if (resultImageDescriptions) resultImageDescriptions.style.display = 'none';
@@ -402,7 +449,8 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
     sendBtn.disabled = true;
 
     const payload = {
-      prompt,
+      mode: state.mode,
+      prompt: state.mode === 'compile' ? (prompt ?? '') : undefined,
       page: { url: window.location.href, title: document.title },
       slotIds: state.slotIds,
       connections: state.slotIds.flatMap((slotId) => {
@@ -471,7 +519,6 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
             resultImageDescriptionsList.appendChild(block);
           });
           resultImageDescriptions.style.display = 'block';
-          resultImageDescriptions.setAttribute('open', '');
         }
         if (r.generatedPrompt) {
           resultPromptText.textContent = r.generatedPrompt;
@@ -543,11 +590,27 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
   setInterval(() => {
     if (state.edges.length === 0 || document.visibilityState !== 'visible') return;
     renderRopes();
-  }, 1500);
+  }, 32);
 
   /* MutationObserver отключён: на Pinterest DOM меняется постоянно (лента, lazy-load),
      наблюдение за body вызывает тяжёлую работу и зависания. Пересчёт позиций — только по scroll/resize. */
 
+  const copyPromptBtn = shadow.querySelector('[data-copy-prompt]') as HTMLButtonElement;
+  if (copyPromptBtn) {
+    copyPromptBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const text = resultPromptText?.textContent?.trim();
+      if (text && navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+          copyPromptBtn.textContent = 'Copied';
+          setTimeout(() => { copyPromptBtn.textContent = 'Copy'; }, 1500);
+        }).catch(() => {});
+      }
+    });
+  }
+
+  updateModeUI();
   renderSlots();
   updateConnectionsList();
 
