@@ -111,6 +111,18 @@ function matchesTargetMeta(el: Element, target: GraphTarget): boolean {
     const anchor = el.closest('a');
     if (meta.href && anchor?.href === meta.href) return true;
   }
+  if (el instanceof HTMLVideoElement) {
+    const src = el.currentSrc || el.src;
+    if (meta.src && src) {
+      try {
+        const a = new URL(meta.src);
+        const b = new URL(src);
+        if (a.pathname === b.pathname || a.href === b.href) return true;
+      } catch {
+        if (src === meta.src) return true;
+      }
+    }
+  }
   const anchor = el.closest('a');
   if (anchor && meta.href && anchor.href === meta.href) return true;
   return !meta.src && !meta.href;
@@ -140,11 +152,15 @@ function resolveByRect(target: GraphTarget, doc: Document): Element | null {
   if (!el || el === doc.body) return null;
   const img = el instanceof HTMLImageElement ? el : el.querySelector('img');
   if (img && target.targetType === 'image' && matchesTargetMeta(img, target)) return img;
+  const video = el instanceof HTMLVideoElement ? el : el.querySelector('video');
+  if (video && (target.targetType === 'video' || target.targetType === 'element') && matchesTargetMeta(video, target)) return video;
+  const canvas = el instanceof HTMLCanvasElement ? el : el.querySelector('canvas');
+  if (canvas && target.targetType === 'canvas') return canvas;
   if (el.closest('a') && target.meta?.href) {
     const a = el.closest('a')!;
-    if (a.href === target.meta.href) return a.querySelector('img') || a;
+    if (a.href === target.meta.href) return a.querySelector('img') || a.querySelector('video') || a;
   }
-  return img || el;
+  return img || video || canvas || el;
 }
 
 /**

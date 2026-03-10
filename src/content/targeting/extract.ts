@@ -45,6 +45,26 @@ function getAnchorMeta(a: HTMLAnchorElement): TargetMeta {
   return meta;
 }
 
+function getVideoMeta(video: HTMLVideoElement): TargetMeta {
+  const meta: TargetMeta = {
+    tagName: video.tagName,
+    src: video.currentSrc || video.src || undefined,
+    title: video.title || undefined,
+  };
+  if (video.videoWidth) meta.naturalWidth = video.videoWidth;
+  if (video.videoHeight) meta.naturalHeight = video.videoHeight;
+  return meta;
+}
+
+function getCanvasMeta(canvas: HTMLCanvasElement): TargetMeta {
+  const meta: TargetMeta = {
+    tagName: canvas.tagName,
+    naturalWidth: canvas.width,
+    naturalHeight: canvas.height,
+  };
+  return meta;
+}
+
 function getGenericMeta(el: Element): TargetMeta {
   const meta: TargetMeta = {
     tagName: el.tagName,
@@ -56,10 +76,16 @@ function getGenericMeta(el: Element): TargetMeta {
 }
 
 export function inferTargetType(el: Element): TargetType {
+  if (el instanceof HTMLVideoElement) return 'video';
+  if (el instanceof HTMLCanvasElement) return 'canvas';
   if (el instanceof HTMLImageElement) return 'image';
   if (el instanceof HTMLAnchorElement) return 'link';
   const img = el.querySelector('img');
   if (img) return 'image';
+  const video = el.querySelector('video');
+  if (video) return 'video';
+  const canvas = el.querySelector('canvas');
+  if (canvas) return 'canvas';
   if (el.closest('a')) return 'link';
   const text = el.textContent?.trim();
   if (text && text.length < 2000) return 'text';
@@ -67,10 +93,16 @@ export function inferTargetType(el: Element): TargetType {
 }
 
 export function extractTargetMeta(el: Element): TargetMeta {
+  if (el instanceof HTMLVideoElement) return getVideoMeta(el);
+  if (el instanceof HTMLCanvasElement) return getCanvasMeta(el);
   if (el instanceof HTMLImageElement) return getImageMeta(el);
   if (el instanceof HTMLAnchorElement) return getAnchorMeta(el);
   const img = el.querySelector('img');
   if (img) return getImageMeta(img);
+  const video = el.querySelector('video');
+  if (video) return getVideoMeta(video);
+  const canvas = el.querySelector('canvas');
+  if (canvas) return getCanvasMeta(canvas);
   return getGenericMeta(el);
 }
 

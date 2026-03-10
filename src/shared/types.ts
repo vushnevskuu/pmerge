@@ -26,15 +26,17 @@ export interface Rect {
   height: number;
 }
 
-export type TargetType = 'image' | 'link' | 'text' | 'element';
+export type TargetType = 'image' | 'link' | 'text' | 'element' | 'video' | 'canvas';
 
 export type ConnectionSlotId = string;
 
-export type AssistantMode = 'merge' | 'compile';
+export type AssistantMode = 'merge' | 'compile' | 'motion';
 
 export const DEFAULT_SLOT_IDS: ConnectionSlotId[] = ['composition', 'tone', 'palette'];
 
 export const MERGE_DEFAULT_SLOT_IDS: ConnectionSlotId[] = ['character', 'material', 'color'];
+
+export const MOTION_DEFAULT_SLOT_IDS: ConnectionSlotId[] = ['motion'];
 
 export const DEFAULT_SLOT_TITLES: Record<string, string> = {
   composition: 'Composition',
@@ -44,12 +46,17 @@ export const DEFAULT_SLOT_TITLES: Record<string, string> = {
   character: 'Character',
   material: 'Material',
   color: 'Color',
+  motion: 'Motion',
 };
 
 export const MERGE_DEFAULT_SLOT_TITLES: Record<string, string> = {
   character: 'Character',
   material: 'Material',
   color: 'Color',
+};
+
+export const MOTION_DEFAULT_SLOT_TITLES: Record<string, string> = {
+  motion: 'Motion',
 };
 
 export const SLOT_ADD_LABELS: Record<number, string> = {
@@ -87,6 +94,13 @@ export interface GraphEdge {
   status: EdgeStatus;
 }
 
+export interface ObservationFrame {
+  x: number;    // viewport, left
+  y: number;    // viewport, top
+  width: number;
+  height: number;
+}
+
 export interface GraphState {
   projectId: string;
   pageUrl: string;
@@ -96,6 +110,8 @@ export interface GraphState {
   slotIds: ConnectionSlotId[];
   slotTitles: Record<string, string>;
   mode: AssistantMode;
+  /** Observation frame for motion mode (ROI). Viewport coords. */
+  observationFrame: ObservationFrame | null;
 }
 
 export interface AssistantSendRequestPayload {
@@ -111,6 +127,12 @@ export interface AssistantSendRequestPayload {
     id?: string;
   }>;
   images?: string[];
+  observationFrame?: ObservationFrame | null;
+  /** Auto-detected on page for motion mode; used to tailor naming and code prompt. */
+  pageContext?: {
+    detectedLibraries?: string[];
+    detectedHints?: string[];
+  };
 }
 
 export interface AssistantResult {
@@ -120,6 +142,11 @@ export interface AssistantResult {
   generatedPrompt?: string;
   imageUrl?: string;
   text?: string;
+  motionDescription?: string;
+  structured?: Record<string, unknown>;
+  motionPhase?: 'selection' | 'analysis';
+  motionCandidates?: Array<{ id: string; label: string; description?: string }>;
+  motionQuestion?: string;
 }
 
 export interface AssistantSendSuccessPayload {
@@ -147,6 +174,7 @@ export type AssistantSendResponse =
   | AssistantSendErrorPayload;
 
 export const MESSAGE_TYPES = {
+  CAPTURE_VISIBLE_TAB: 'CAPTURE_VISIBLE_TAB',
   ASSISTANT_SEND_REQUEST: 'ASSISTANT_SEND_REQUEST',
   ASSISTANT_SEND_SUCCESS: 'ASSISTANT_SEND_SUCCESS',
   ASSISTANT_SEND_ERROR: 'ASSISTANT_SEND_ERROR',

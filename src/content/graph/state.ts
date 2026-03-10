@@ -2,19 +2,19 @@
  * Graph state: assistant node, targets, edges, slot titles.
  */
 
-import type { GraphState, GraphTarget, GraphEdge, AssistantNode, ConnectionSlotId, AssistantMode } from '../../shared/types';
-import { DEFAULT_SLOT_IDS, DEFAULT_SLOT_TITLES, MERGE_DEFAULT_SLOT_IDS, MERGE_DEFAULT_SLOT_TITLES, SLOT_ADD_LABELS } from '../../shared/types';
+import type { GraphState, GraphTarget, GraphEdge, AssistantNode, ConnectionSlotId, AssistantMode, ObservationFrame } from '../../shared/types';
+import { DEFAULT_SLOT_IDS, DEFAULT_SLOT_TITLES, MERGE_DEFAULT_SLOT_IDS, MERGE_DEFAULT_SLOT_TITLES, MOTION_DEFAULT_SLOT_IDS, MOTION_DEFAULT_SLOT_TITLES, SLOT_ADD_LABELS } from '../../shared/types';
 import type { ExtractedTarget } from '../targeting/extract';
 import { resolveTarget } from '../targeting/locators';
 
 const ASSISTANT_ID = 'assistant_main';
 
 export function createInitialState(pageUrl: string): GraphState {
-  const mode: AssistantMode = 'merge';
-  const slotIds = [...MERGE_DEFAULT_SLOT_IDS];
+  const mode: AssistantMode = 'compile';
+  const slotIds = [...DEFAULT_SLOT_IDS];
   const slotTitles: Record<string, string> = {};
   slotIds.forEach((id) => {
-    slotTitles[id] = MERGE_DEFAULT_SLOT_TITLES[id] ?? id;
+    slotTitles[id] = DEFAULT_SLOT_TITLES[id] ?? id;
   });
   return {
     projectId: 'project_' + Date.now(),
@@ -25,17 +25,25 @@ export function createInitialState(pageUrl: string): GraphState {
     slotIds,
     slotTitles,
     mode,
+    observationFrame: null,
   };
 }
 
 export function setMode(state: GraphState, mode: AssistantMode): void {
   state.mode = mode;
   state.edges = [];
+  if (mode !== 'motion') state.observationFrame = null;
   if (mode === 'merge') {
     state.slotIds = [...MERGE_DEFAULT_SLOT_IDS];
     state.slotTitles = {};
     state.slotIds.forEach((id) => {
       state.slotTitles[id] = MERGE_DEFAULT_SLOT_TITLES[id] ?? id;
+    });
+  } else if (mode === 'motion') {
+    state.slotIds = [...MOTION_DEFAULT_SLOT_IDS];
+    state.slotTitles = {};
+    state.slotIds.forEach((id) => {
+      state.slotTitles[id] = MOTION_DEFAULT_SLOT_TITLES[id] ?? id;
     });
   } else {
     state.slotIds = [...DEFAULT_SLOT_IDS];
@@ -79,6 +87,7 @@ export function setSlotTitle(state: GraphState, slotId: ConnectionSlotId, title:
 }
 
 export function addSlot(state: GraphState): ConnectionSlotId {
+  if (state.mode === 'motion') return state.slotIds[0] ?? 'motion';
   const n = state.slotIds.length;
   const label = state.mode === 'merge' ? `Port ${n + 1}` : SLOT_ADD_LABELS[n] ?? `Slot ${n + 1}`;
   const id = state.mode === 'merge' ? `port_${n}` : n === 3 ? 'theme' : `slot_${n}`;
@@ -119,4 +128,8 @@ export function revalidateTargets(state: GraphState): void {
 export function updateTargetRect(state: GraphState, targetId: string, rect: { x: number; y: number; width: number; height: number }): void {
   const t = state.targets.find((x) => x.id === targetId);
   if (t) t.rect = rect;
+}
+
+export function setObservationFrame(state: GraphState, frame: ObservationFrame | null): void {
+  state.observationFrame = frame;
 }

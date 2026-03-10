@@ -3,7 +3,7 @@
   "name": "AI Assistant Connector",
   "version": "0.1.0",
   "description": "Floating AI assistant with visual links to page elements",
-  "permissions": ["storage", "activeTab"],
+  "permissions": ["storage", "activeTab", "tabs"],
   "host_permissions": [
     "https://*.pinterest.com/*",
     "<all_urls>"

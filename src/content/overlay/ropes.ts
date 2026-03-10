@@ -64,7 +64,11 @@ export function drawRopes(
   const portPositions = getPortPositions();
 
   for (const eid of swingState.keys()) {
-    if (!state.edges.some((e) => e.id === eid)) swingState.delete(eid);
+    if (eid === 'motion_roi') {
+      if (!state.observationFrame) swingState.delete(eid);
+    } else if (!state.edges.some((e) => e.id === eid)) {
+      swingState.delete(eid);
+    }
   }
 
   const paths: string[] = [];
@@ -72,6 +76,7 @@ export function drawRopes(
   const edgeIds: (string | null)[] = [];
 
   for (const edge of state.edges) {
+    if (state.mode === 'motion' && edge.slotId === 'motion' && state.observationFrame) continue;
     const portPos = portPositions[edge.slotId];
     if (!portPos) continue;
     const target = state.targets.find((t) => t.id === edge.target);
@@ -114,6 +119,39 @@ export function drawRopes(
       paths.push(saggingRopePath(portPos.x, portPos.y, tempEnd.x, tempEnd.y, 0, 0));
       classes.push('temp');
       edgeIds.push(null);
+    }
+  }
+
+  if (state.mode === 'motion' && state.observationFrame && !tempEnd) {
+    const motionPort = portPositions['motion'];
+    if (motionPort) {
+      const f = state.observationFrame;
+      const cx = f.x + f.width / 2;
+      const cy = f.y + f.height / 2;
+      const ropeId = 'motion_roi';
+      let s = swingState.get(ropeId);
+      if (!s) {
+        s = { vx: 0, vy: 0, lastX1: motionPort.x, lastY1: motionPort.y, lastX2: cx, lastY2: cy };
+        swingState.set(ropeId, s);
+      } else {
+        const dx1 = motionPort.x - s.lastX1;
+        const dy1 = motionPort.y - s.lastY1;
+        const dx2 = cx - s.lastX2;
+        const dy2 = cy - s.lastY2;
+        s.vx += (dx1 + dx2) * swaySensitivity;
+        s.vy += (dy1 + dy2) * swaySensitivity;
+        s.lastX1 = motionPort.x;
+        s.lastY1 = motionPort.y;
+        s.lastX2 = cx;
+        s.lastY2 = cy;
+      }
+      const swayX = s.vx;
+      const swayY = s.vy;
+      s.vx *= swayDecay;
+      s.vy *= swayDecay;
+      paths.push(saggingRopePath(motionPort.x, motionPort.y, cx, cy, swayX, swayY));
+      classes.push('active');
+      edgeIds.push(ropeId);
     }
   }
 

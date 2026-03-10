@@ -13,6 +13,8 @@ import { MESSAGE_TYPES } from '../shared/types';
 import { extractDescriptionFromMergeFormat, normalizeMergePrompt, stripColorFromMaterial, sanitizePromptMaterialColors, enforceWhiteBackground } from '../shared/parseUtils';
 import { VISUAL_ANALYSIS_INSTRUCTIONS } from './visualInstructions';
 import { MERGE_INSTRUCTIONS } from './mergeInstructions.generated';
+import { MOTION_PROMPT } from './motionInstructions';
+import { isValidImageUrl } from '../shared/imageValidation';
 
 const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 const OPENAI_IMAGES_URL = 'https://api.openai.com/v1/images/generations';
@@ -31,6 +33,10 @@ async function getSettings(): Promise<StoredSettings> {
 }
 
 const MAX_IMAGES = 5;
+/** Max images in one API request (model limit). */
+const PER_REQUEST_IMAGES = 5;
+/** Max total frames for motion; we send in chunks of PER_REQUEST_IMAGES. */
+const MOTION_MAX_TOTAL_IMAGES = 20;
 
 function getConnectionsBySlotOrder(payload: AssistantSendRequestPayload): Array<typeof payload.connections[0] & { slotId: string }> {
   const bySlot = new Map<string, (typeof payload.connections)[0]>();
@@ -50,23 +56,22 @@ function getConnectionsBySlotOrder(payload: AssistantSendRequestPayload): Array<
 function getImageUrlsFromPayload(payload: AssistantSendRequestPayload): string[] {
   const seen = new Set<string>();
   const urls: string[] = [];
+  const maxImgs = payload.mode === 'motion' ? PER_REQUEST_IMAGES : MAX_IMAGES;
   const ordered = getConnectionsBySlotOrder(payload);
   for (const c of ordered) {
     const src = c.meta?.src;
-    if (typeof src === 'string' && /^https?:\/\//i.test(src) && !seen.has(src)) {
+    if (typeof src === 'string' && isValidImageUrl(src) && !seen.has(src)) {
       seen.add(src);
       urls.push(src);
-      if (urls.length >= MAX_IMAGES) break;
+      if (urls.length >= maxImgs) break;
     }
   }
   if (payload.images?.length) {
     for (const img of payload.images) {
-      if (typeof img === 'string' && (img.startsWith('data:image') || /^https?:\/\//i.test(img))) {
-        if (!seen.has(img)) {
-          seen.add(img);
-          urls.push(img);
-          if (urls.length >= MAX_IMAGES) break;
-        }
+      if (typeof img === 'string' && isValidImageUrl(img) && !seen.has(img)) {
+        seen.add(img);
+        urls.push(img);
+        if (urls.length >= maxImgs) break;
       }
     }
   }
@@ -75,17 +80,94 @@ function getImageUrlsFromPayload(payload: AssistantSendRequestPayload): string[]
 
 type MessageContent = string | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>;
 
-function buildMessages(payload: AssistantSendRequestPayload): Array<{ role: 'system' | 'user'; content: MessageContent }> {
+function countImagePartsInMessages(messages: Array<{ content?: MessageContent }>): number {
+  let n = 0;
+  for (const msg of messages) {
+    const c = msg.content;
+    if (Array.isArray(c)) for (const p of c) if (p.type === 'image_url') n++;
+  }
+  return n;
+}
+
+/** Enforce API limit: no message may contain more than maxImages image_url parts. */
+function capMessagesImages(
+  messages: Array<{ role: string; content: MessageContent }>,
+  maxImages: number = PER_REQUEST_IMAGES
+): Array<{ role: string; content: MessageContent }> {
+  return messages.map((msg) => {
+    const content = msg.content;
+    if (typeof content === 'string') return msg;
+    let count = 0;
+    const out: MessageContent[0][] = [];
+    for (const part of content) {
+      if (part.type === 'image_url') {
+        count++;
+        if (count <= maxImages) out.push(part);
+      } else {
+        out.push(part);
+      }
+    }
+    return { ...msg, content: out };
+  });
+}
+
+function buildMessages(
+  payload: AssistantSendRequestPayload,
+  overrideImageUrls?: string[]
+): Array<{ role: 'system' | 'user'; content: MessageContent }> {
   const mode = payload.mode ?? 'compile';
   const ordered = getConnectionsBySlotOrder(payload);
-  const imageUrls = getImageUrlsFromPayload(payload);
+  const imageUrls = overrideImageUrls ?? getImageUrlsFromPayload(payload);
   const hasImages = imageUrls.length > 0;
 
   const textParts: string[] = [];
   textParts.push(`Page: ${payload.page.title} (${payload.page.url})\n`);
   textParts.push(`MODE: ${mode}\n`);
 
-  if (mode === 'merge') {
+  if (mode === 'motion') {
+    if (payload.prompt?.trim()) {
+      const hint = payload.prompt.trim();
+      textParts.push(`\nUSER FOCUS (prioritize in analysis and in section #11): "${hint}"\n`);
+      if (/\b(стрелка|влево|вправо|вверх|вниз|left|right|up|down|arrow|chevron)\b/i.test(hint)) {
+        textParts.push('The user may have specified direction — if so, treat it as correct. Do not invert or contradict.\n');
+      }
+    }
+    const of = payload.observationFrame;
+    if (of && typeof of.x === 'number' && typeof of.y === 'number' && typeof of.width === 'number' && typeof of.height === 'number') {
+      textParts.push('\nOBSERVATION FRAME (analyze ONLY this region):\n');
+      textParts.push(`- frame_mode: approximate_box`);
+      textParts.push(`- frame_position: x=${of.x}, y=${of.y} (viewport px)`);
+      textParts.push(`- frame_size: width=${of.width}, height=${of.height}`);
+      textParts.push(`- frame_boundaries: viewport coordinates`);
+      textParts.push(`- tracking_behavior: fixed\n`);
+    } else {
+      textParts.push('\nOBSERVATION FRAME: Full captured area (no ROI crop). Analyze the entire frame.\n');
+    }
+    if (ordered.length > 0) {
+      textParts.push('\nLinked source:\n');
+      ordered.forEach((c) => {
+        const slotTitle = (c as { slotTitle?: string }).slotTitle || c.slotId;
+        textParts.push(`- "${slotTitle}": type ${c.targetType}`);
+        if (c.meta.src) textParts.push(`  src: ${String(c.meta.src).slice(0, 120)}...`);
+        textParts.push('');
+      });
+    }
+    if (hasImages) {
+      if (payload.prompt?.trim()) {
+        textParts.push('\nAnalyze with focus on the user-described element/area above.\n');
+      }
+      textParts.push(`\nFrame 1 is the start, Frame ${imageUrls.length} is the end. Describe direction and motion as they appear from start to end.`);
+      textParts.push(`\nDEFAULT APPEARANCE: Frames 1–3 (first frames) define how the element looks at rest. Describe exactly: shape, colors, and arrow/chevron direction (e.g. left-pointing). The implementation prompt MUST reproduce this; do not invert direction. If later frames show a hover-like change (e.g. fill, color), describe it as hover and include "default" vs "on hover" in the code prompt.`);
+      textParts.push(`\nYou will receive ${imageUrls.length} KEYFRAMES in strict temporal order (Frame 1, Frame 2, ...). These are a sparse sample from one continuous motion. INFER and INTERPOLATE the full motion between keyframes; describe the complete animation from start to end, including phases between the keyframes. Analyze ONLY the observation frame region.`);
+      textParts.push(`\nLOOP DETECTION: Compare Frame 1 and Frame ${imageUrls.length}. If they are visually similar (same state/position), the recording is likely a LOOPED animation. You MUST report loop.detected and include loop/repeat instructions in the implementation prompt.`);
+    }
+    if (payload.pageContext?.detectedLibraries?.length) {
+      textParts.push(`\nPage context: detected possible use of ${payload.pageContext.detectedLibraries.join(', ')}. Prefer this ecosystem's component names and motion patterns when naming the element and in the code-generation prompt (#11).`);
+      if (payload.pageContext.detectedHints?.length) {
+        textParts.push(` Detected classes/hints: ${payload.pageContext.detectedHints.slice(0, 5).join(', ')}.`);
+      }
+    }
+  } else if (mode === 'merge') {
     textParts.push('MERGE mode: ONE subject. MANDATORY: every connected port (Character, Material, Color, Style, etc.) MUST appear in the prompt. No port may be omitted. Format: [character] MADE OF [material] IN [colors], or in [style] style. If no Background port: background = pure white, ideal white, no gradients, no scenery.\n');
     textParts.push('Example: "Two men MADE OF smooth yellow plastic IN orange and green." — the men ARE plastic sculptures, not wearing plastic. Whole body = material. 250+ words.\n');
     if (ordered.length > 0) {
@@ -157,7 +239,11 @@ function buildMessages(payload: AssistantSendRequestPayload): Array<{ role: 'sys
   const slotTitlesList = ordered.map((c) => (c as { slotTitle?: string }).slotTitle || c.slotId).join(', ');
   let systemPrompt: string;
 
-  if (mode === 'merge') {
+  if (mode === 'motion') {
+    systemPrompt = hasImages
+      ? MOTION_PROMPT
+      : 'Motion mode requires at least one linked video/GIF/canvas and captured frames. Connect a motion source and try again.';
+  } else if (mode === 'merge') {
     systemPrompt = hasImages
       ? `${MERGE_INSTRUCTIONS}
 
@@ -244,10 +330,22 @@ Reply in JSON: imageDescriptions, summary, styleSignals, generatedPrompt.`
 
   let userContent: MessageContent = userText;
   if (hasImages) {
-    userContent = [
-      { type: 'text' as const, text: userText },
-      ...imageUrls.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
-    ];
+    const capped = mode === 'motion' ? imageUrls.slice(0, PER_REQUEST_IMAGES) : imageUrls;
+    if (mode === 'motion' && capped.length > 1) {
+      const parts: MessageContent[0][] = [{ type: 'text' as const, text: userText }];
+      const n = capped.length;
+      capped.forEach((url, i) => {
+        const label = i === 0 ? `\nFrame 1 (START of sequence):` : i === n - 1 ? `\nFrame ${n} (END of sequence):` : `\nFrame ${i + 1} (keyframe ${i + 1}/${n}):`;
+        parts.push({ type: 'text' as const, text: label });
+        parts.push({ type: 'image_url' as const, image_url: { url } });
+      });
+      userContent = parts;
+    } else {
+      userContent = [
+        { type: 'text' as const, text: userText },
+        ...capped.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
+      ];
+    }
   }
 
   return [
@@ -256,13 +354,79 @@ Reply in JSON: imageDescriptions, summary, styleSignals, generatedPrompt.`
   ];
 }
 
+const MOTION_SEGMENT_SYSTEM = `You are analyzing one segment of a UI motion sequence (same observation frame rules apply). Describe only what happens in the given frames: UI elements, motion type, timing. One concise paragraph. Ignore any blue rope/overlay. Reply with JSON only: {"segmentDescription": "..."}.`;
+
+function buildMotionSegmentMessages(
+  payload: AssistantSendRequestPayload,
+  chunk: string[],
+  segmentIndex: number,
+  totalSegments: number
+): Array<{ role: 'system' | 'user'; content: MessageContent }> {
+  const safeChunk = chunk.slice(0, PER_REQUEST_IMAGES);
+  const start = segmentIndex * PER_REQUEST_IMAGES + 1;
+  const end = start + safeChunk.length - 1;
+  let text = `Page: ${payload.page.title} (${payload.page.url})\nMODE: motion (segment ${segmentIndex + 1}/${totalSegments})\n`;
+  const of = payload.observationFrame;
+  if (of && typeof of.x === 'number' && typeof of.y === 'number') {
+    text += `\nOBSERVATION FRAME: x=${of.x}, y=${of.y}, width=${of.width}, height=${of.height}. Analyze ONLY this region.\n`;
+  }
+  text += `\nThis is segment ${segmentIndex + 1} of ${totalSegments} (frames ${start}–${end}). Describe only what happens in these frames: UI elements, motion type, timing. One concise paragraph. Reply with JSON: {"segmentDescription": "..."}\n`;
+  const parts: MessageContent[0][] = [{ type: 'text' as const, text }];
+  safeChunk.forEach((url, i) => {
+    parts.push({ type: 'text' as const, text: `\nFrame ${i + 1}:` });
+    parts.push({ type: 'image_url' as const, image_url: { url } });
+  });
+  return [
+    { role: 'system', content: MOTION_SEGMENT_SYSTEM },
+    { role: 'user', content: parts },
+  ];
+}
+
+function buildMotionSynthesisMessages(
+  payload: AssistantSendRequestPayload,
+  segmentDescriptions: string[]
+): Array<{ role: 'system' | 'user'; content: string }> {
+  let text = `Page: ${payload.page.title} (${payload.page.url})\nMODE: motion (synthesis)\n\n`;
+  text += `The following are segment descriptions from one continuous motion sequence (in order). Synthesize them into ONE complete motion analysis.\n\n`;
+  segmentDescriptions.forEach((desc, i) => {
+    text += `Segment ${i + 1}: ${desc}\n\n`;
+  });
+  if (payload.prompt?.trim()) text += `User hint: ${payload.prompt.trim()}\n\n`;
+  text += `Provide the full analysis: motion description, timeline, implementation spec, and generated prompt for recreating the effect.`;
+  return [
+    { role: 'system', content: MOTION_PROMPT },
+    { role: 'user', content: text },
+  ];
+}
+
 async function callAPI(
   payload: AssistantSendRequestPayload,
   apiKey: string,
   provider: 'openai' | 'groq'
 ): Promise<AssistantSendSuccessPayload['result']> {
-  const messages = buildMessages(payload);
-  const hasImages = getImageUrlsFromPayload(payload).length > 0;
+  // Enforce API limit: never send more than 5 images from payload.images (content may send more).
+  if (payload.mode === 'motion' && Array.isArray(payload.images) && payload.images.length > PER_REQUEST_IMAGES) {
+    payload = { ...payload, images: payload.images.slice(0, PER_REQUEST_IMAGES) };
+  }
+  const imageUrls = getImageUrlsFromPayload(payload);
+  const hasImages = imageUrls.length > 0;
+  if (
+    payload.mode === 'motion' &&
+    imageUrls.length === 0 &&
+    (Array.isArray(payload.images) ? payload.images.length > 0 : false)
+  ) {
+    throw {
+      code: 'network' as AssistantErrorCode,
+      message:
+        'Все кадры отфильтрованы (некорректные данные изображений). Попробуйте снова: уменьшите область ROI или перезапишите запись.',
+    };
+  }
+  const isMotionMulti = payload.mode === 'motion' && imageUrls.length > PER_REQUEST_IMAGES;
+  // #region agent log
+  const logBC = { sessionId: '62a955', location: 'index.ts:callAPI', message: 'after getImageUrlsFromPayload', data: { mode: payload.mode, payloadImagesLength: payload.images?.length ?? 0, imageUrlsLength: imageUrls.length, isMotionMulti, provider }, hypothesisId: 'B,C', timestamp: Date.now() };
+  console.log('[motion-debug]', JSON.stringify(logBC));
+  fetch('http://127.0.0.1:7912/ingest/44514764-7d00-4f93-8141-03f86e3272e2', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '62a955' }, body: JSON.stringify(logBC) }).catch(() => {});
+  // #endregion
   const url = provider === 'groq' ? GROQ_API_URL : OPENAI_API_URL;
   const model =
     provider === 'groq'
@@ -270,49 +434,132 @@ async function callAPI(
         ? 'meta-llama/llama-4-scout-17b-16e-instruct'
         : 'llama-3.1-8b-instant'
       : 'gpt-4o-mini';
-  const body: Record<string, unknown> = {
-    model,
-    messages,
-    max_tokens: 4096,
-    response_format: { type: 'json_object' },
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${apiKey}`,
   };
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
 
-  if (!res.ok) {
-    const text = await res.text();
-    const isModelNotFound =
-      res.status === 400 &&
-      /model_not_found|does not exist|do not have access/i.test(text);
-    if (
-      isModelNotFound &&
-      provider === 'groq' &&
-      model === 'meta-llama/llama-4-scout-17b-16e-instruct'
-    ) {
-      const payloadWithoutImages: AssistantSendRequestPayload = {
-        ...payload,
-        connections: payload.connections.map((c) => ({
-          ...c,
-          meta: { ...c.meta, src: undefined },
-        })),
-        images: [],
-      };
-      return callAPI(payloadWithoutImages, apiKey, provider);
+  let content: string;
+  if (isMotionMulti) {
+    const chunks: string[][] = [];
+    for (let i = 0; i < imageUrls.length; i += PER_REQUEST_IMAGES) {
+      chunks.push(imageUrls.slice(i, i + PER_REQUEST_IMAGES));
     }
-    if (res.status === 401) throw { code: 'auth' as AssistantErrorCode, message: 'Invalid or missing API key' };
-    if (res.status === 429) throw { code: 'rate_limit' as AssistantErrorCode, message: 'Rate limit exceeded' };
-    throw { code: 'network' as AssistantErrorCode, message: text || res.statusText };
+    const segmentDescriptions: string[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const segMessages = capMessagesImages(buildMotionSegmentMessages(payload, chunks[i], i, chunks.length));
+      // #region agent log
+      const logSeg = { sessionId: '62a955', location: 'index.ts:segmentFetch', message: 'before segment request', data: { segmentIndex: i, chunkLength: chunks[i].length, imagePartsInBody: countImagePartsInMessages(segMessages) }, hypothesisId: 'D', timestamp: Date.now() };
+      console.log('[motion-debug]', JSON.stringify(logSeg));
+      fetch('http://127.0.0.1:7912/ingest/44514764-7d00-4f93-8141-03f86e3272e2', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '62a955' }, body: JSON.stringify(logSeg) }).catch(() => {});
+      // #endregion
+      const segRes = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model,
+          messages: segMessages,
+          max_tokens: 2048,
+          response_format: { type: 'json_object' as const },
+        }),
+      });
+      if (!segRes.ok) {
+        const text = await segRes.text();
+        const debugSeg = `[Debug] path=segment segmentIndex=${i} chunkLength=${chunks[i].length} imagePartsInBody=${countImagePartsInMessages(segMessages)}`;
+        if (segRes.status === 401) throw { code: 'auth' as AssistantErrorCode, message: 'Invalid or missing API key', debug: debugSeg };
+        if (segRes.status === 429) throw { code: 'rate_limit' as AssistantErrorCode, message: 'Rate limit exceeded', debug: debugSeg };
+        throw { code: 'network' as AssistantErrorCode, message: text || segRes.statusText, debug: debugSeg };
+      }
+      const segData = (await segRes.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      const segContent = segData.choices?.[0]?.message?.content ?? '';
+      let segDesc = '';
+      try {
+        const p = JSON.parse(segContent) as { segmentDescription?: string };
+        segDesc = typeof p.segmentDescription === 'string' ? p.segmentDescription : segContent;
+      } catch {
+        segDesc = segContent;
+      }
+      segmentDescriptions.push(segDesc);
+    }
+    const synMessages = buildMotionSynthesisMessages(payload, segmentDescriptions);
+    const synRes = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ model, messages: synMessages, max_tokens: 8192 }),
+    });
+    if (!synRes.ok) {
+      const text = await synRes.text();
+      if (synRes.status === 401) throw { code: 'auth' as AssistantErrorCode, message: 'Invalid or missing API key' };
+      if (synRes.status === 429) throw { code: 'rate_limit' as AssistantErrorCode, message: 'Rate limit exceeded' };
+      throw { code: 'network' as AssistantErrorCode, message: text || synRes.statusText };
+    }
+    const synData = (await synRes.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    content = synData.choices?.[0]?.message?.content ?? '';
+  } else {
+    const singleRequestImages = payload.mode === 'motion' ? imageUrls.slice(0, PER_REQUEST_IMAGES) : undefined;
+    const messages = capMessagesImages(buildMessages(payload, singleRequestImages));
+    // #region agent log
+    const logSingle = { sessionId: '62a955', location: 'index.ts:singleFetch', message: 'before single request', data: { singleRequestImagesLength: singleRequestImages?.length ?? 0, imageUrlsLength: imageUrls.length, imagePartsInBody: countImagePartsInMessages(messages) }, hypothesisId: 'C,D', timestamp: Date.now() };
+    console.log('[motion-debug]', JSON.stringify(logSingle));
+    fetch('http://127.0.0.1:7912/ingest/44514764-7d00-4f93-8141-03f86e3272e2', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '62a955' }, body: JSON.stringify(logSingle) }).catch(() => {});
+    // #endregion
+    const body: Record<string, unknown> = {
+      model,
+      messages,
+      max_tokens: 8192,
+      ...(payload.mode !== 'motion' ? { response_format: { type: 'json_object' as const } } : {}),
+    };
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      const debugSingle = `[Debug] path=single imageUrlsLength=${imageUrls.length} singleRequestImagesLength=${singleRequestImages?.length ?? 0} imagePartsInBody=${countImagePartsInMessages(messages)}`;
+      const isModelNotFound =
+        res.status === 400 &&
+        /model_not_found|does not exist|do not have access/i.test(text);
+      if (
+        isModelNotFound &&
+        provider === 'groq' &&
+        model === 'meta-llama/llama-4-scout-17b-16e-instruct'
+      ) {
+        const payloadWithoutImages: AssistantSendRequestPayload = {
+          ...payload,
+          connections: payload.connections.map((c) => ({
+            ...c,
+            meta: { ...c.meta, src: undefined },
+          })),
+          images: [],
+        };
+        return callAPI(payloadWithoutImages, apiKey, provider);
+      }
+      if (res.status === 401) throw { code: 'auth' as AssistantErrorCode, message: 'Invalid or missing API key', debug: debugSingle };
+      if (res.status === 429) throw { code: 'rate_limit' as AssistantErrorCode, message: 'Rate limit exceeded', debug: debugSingle };
+      throw { code: 'network' as AssistantErrorCode, message: text || res.statusText, debug: debugSingle };
+    }
+
+    const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    content = data.choices?.[0]?.message?.content ?? '';
   }
 
-  const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-  const content = data.choices?.[0]?.message?.content;
   if (!content) throw { code: 'invalid_payload' as AssistantErrorCode, message: 'Empty response from API' };
+
+  const apiError = (() => {
+    try {
+      const p = JSON.parse(content) as { error?: { message?: string } };
+      if (p?.error?.message) return p.error.message;
+    } catch {
+      /* ignore */
+    }
+    return null;
+  })();
+  if (apiError) {
+    const debugLine = `[Debug] path=single imageUrlsLength=${imageUrls.length}`;
+    throw { code: 'network' as AssistantErrorCode, message: apiError, debug: debugLine };
+  }
 
   try {
     let parsed = JSON.parse(content) as Record<string, unknown>;
@@ -341,6 +588,10 @@ async function callAPI(
         return obj[slotTitle] ?? obj[slotTitle.toLowerCase()] ?? '';
       }).filter((s) => typeof s === 'string' && s.length > 0);
     }
+    const motionDescription = typeof parsed.motionDescription === 'string' ? parsed.motionDescription : undefined;
+    const structured = parsed.structured && typeof parsed.structured === 'object'
+      ? (parsed.structured as Record<string, unknown>)
+      : undefined;
     let generatedPrompt = typeof parsed.generatedPrompt === 'string' ? parsed.generatedPrompt : undefined;
     if (!generatedPrompt && typeof (parsed as { prompt?: string }).prompt === 'string') {
       generatedPrompt = (parsed as { prompt: string }).prompt;
@@ -399,15 +650,29 @@ async function callAPI(
       }
       if (!hasBackgroundPort) generatedPrompt = enforceWhiteBackground(generatedPrompt);
     }
-    return {
+    const baseResult: AssistantSendSuccessPayload['result'] = {
       summary,
       styleSignals,
       imageDescriptions,
       generatedPrompt,
       text: content,
     };
+    if (motionDescription) baseResult.motionDescription = motionDescription;
+    if (structured) baseResult.structured = structured;
+    const selPhase = parsed.phase === 'selection';
+    const selCandidates = Array.isArray(parsed.candidates)
+      ? (parsed.candidates as Array<{ id?: string; label?: string; description?: string }>)
+          .filter((c) => c && typeof c.id === 'string' && typeof c.label === 'string')
+          .map((c) => ({ id: c.id!, label: c.label!, description: typeof c.description === 'string' ? c.description : undefined }))
+      : undefined;
+    if (selPhase && selCandidates?.length) {
+      baseResult.motionPhase = 'selection';
+      baseResult.motionCandidates = selCandidates;
+      baseResult.motionQuestion = typeof parsed.question === 'string' ? parsed.question : 'Which element should I analyze?';
+    }
+    return baseResult;
   } catch {
-    const fallback = extractFromText(content);
+    const fallback = payload.mode === 'motion' ? extractMotionFromText(content) : extractFromText(content);
     const result = fallback ?? { text: content };
     if (!result.generatedPrompt && result.imageDescriptions?.length) {
       const ordered = getConnectionsBySlotOrder(payload);
@@ -451,6 +716,36 @@ async function callAPI(
     }
     return result;
   }
+}
+
+function extractMotionFromText(text: string): AssistantSendSuccessPayload['result'] | null {
+  if (!text?.trim()) return null;
+  let motionDesc = text.match(/"motionDescription"\s*:\s*"((?:[^"\\]|\\.)*)"/)?.[1]?.replace(/\\"/g, '"').replace(/\\n/g, '\n')
+    ?? text.match(/(?:motionDescription|Motion Description)[:\s]*([^\n*"][^\n]*)/i)?.[1]?.trim();
+  if (!motionDesc) motionDesc = text;
+  let structured: Record<string, unknown> | undefined;
+  const codeBlocks = text.matchAll(/```(?:json)?\s*\n?([\s\S]*?)```/g);
+  for (const m of codeBlocks) {
+    const block = m[1]?.trim();
+    if (!block?.startsWith('{')) continue;
+    try {
+      const s = JSON.parse(block);
+      if (s && typeof s === 'object' && ('animation_type' in s || 'timeline' in s || 'elements' in s)) {
+        structured = s as Record<string, unknown>;
+        break;
+      }
+    } catch {}
+  }
+  if (!structured) {
+    const braceMatch = text.match(/\{\s*"animation_type"\s*:[\s\S]*\}/);
+    if (braceMatch) {
+      try {
+        const s = JSON.parse(braceMatch[0]);
+        if (s && typeof s === 'object') structured = s as Record<string, unknown>;
+      } catch {}
+    }
+  }
+  return { motionDescription: motionDesc, structured, text };
 }
 
 function extractFromText(text: string): AssistantSendSuccessPayload['result'] | null {
@@ -540,9 +835,15 @@ function sendError(code: AssistantErrorCode, message: string): AssistantSendErro
 chrome.runtime.onMessage.addListener(
   (
     msg: { type: string; payload?: AssistantSendRequestPayload },
-    _sender: chrome.runtime.MessageSender,
-    sendResponse: (r: AssistantSendSuccessPayload | AssistantSendErrorPayload) => void
+    sender: chrome.runtime.MessageSender,
+    sendResponse: (r: AssistantSendSuccessPayload | AssistantSendErrorPayload | { dataUrl: string }) => void
   ) => {
+    if (msg.type === MESSAGE_TYPES.CAPTURE_VISIBLE_TAB) {
+      chrome.tabs.captureVisibleTab(undefined, { format: 'jpeg', quality: 90 })
+        .then((dataUrl) => sendResponse({ dataUrl }))
+        .catch((err) => sendResponse({ ok: false, error: String(err), code: 'unknown' } as AssistantSendErrorPayload));
+      return true;
+    }
     if (msg.type !== MESSAGE_TYPES.ASSISTANT_SEND_REQUEST) return;
     const payload = msg.payload;
     if (!payload || !payload.page?.url) {
@@ -558,6 +859,17 @@ chrome.runtime.onMessage.addListener(
       const imageUrls = getImageUrlsFromPayload(payload);
       if (imageUrls.length === 0) {
         sendResponse(sendError('invalid_payload', 'Merge mode requires at least one connected image'));
+        return true;
+      }
+    }
+    if (mode === 'motion') {
+      const imageUrls = getImageUrlsFromPayload(payload);
+      if (payload.connections.length === 0) {
+        sendResponse(sendError('invalid_payload', 'Motion mode requires at least one connected video/GIF/canvas'));
+        return true;
+      }
+      if (imageUrls.length === 0) {
+        sendResponse(sendError('invalid_payload', 'Motion mode requires captured frames. Connect a video, GIF, or canvas and try again.'));
         return true;
       }
     }
@@ -585,7 +897,7 @@ chrome.runtime.onMessage.addListener(
             result.text = (result.text ?? '') + '\n\n[Expand error: ' + String(expandErr) + ']';
           }
         }
-        if (provider === 'openai' && result.generatedPrompt && apiKey) {
+        if (provider === 'openai' && result.generatedPrompt && apiKey && mode !== 'motion') {
           try {
             const imageUrl = await callDallE(result.generatedPrompt, apiKey);
             if (imageUrl) result.imageUrl = imageUrl;
@@ -595,8 +907,9 @@ chrome.runtime.onMessage.addListener(
         }
         sendResponse({ ok: true, result, usage: { cached: false } });
       } catch (err: unknown) {
-        const e = err as { code?: AssistantErrorCode; message?: string };
-        sendResponse(sendError(e.code ?? 'unknown', e.message ?? String(err)));
+        const e = err as { code?: AssistantErrorCode; message?: string; debug?: string };
+        const msg = (e.message ?? String(err)) + (e.debug ? '\n\n' + e.debug : '');
+        sendResponse(sendError(e.code ?? 'unknown', msg));
       }
     })();
 
