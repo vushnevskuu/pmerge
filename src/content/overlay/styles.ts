@@ -183,6 +183,28 @@ export const overlayStyles = `
     background: rgba(229, 231, 235, 0.8);
     color: #374151;
   }
+  .connections-list {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #4b5563;
+  }
+  .connection-slot {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+  }
+  .connection-slot-title { font-weight: 500; }
+  .connection-slot button {
+    margin-left: auto;
+    padding: 0 6px;
+    font-size: 11px;
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    color: #6b7280;
+  }
+  .connection-slot button:hover { color: #dc2626; }
   .port-dot {
     position: absolute;
     left: -24px;

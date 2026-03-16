@@ -115,10 +115,12 @@ function buildMessages(
   payload: AssistantSendRequestPayload,
   overrideImageUrls?: string[]
 ): Array<{ role: 'system' | 'user'; content: MessageContent }> {
-  const mode = payload.mode ?? 'compile';
+  const rawMode = payload.mode ?? 'compile';
   const ordered = getConnectionsBySlotOrder(payload);
   const imageUrls = overrideImageUrls ?? getImageUrlsFromPayload(payload);
   const hasImages = imageUrls.length > 0;
+  const hasPrompt = typeof payload.prompt === 'string' && payload.prompt.trim().length > 0;
+  const mode = (rawMode === 'compile' && !hasPrompt && hasImages) ? 'merge' : rawMode;
 
   const textParts: string[] = [];
   textParts.push(`Page: ${payload.page.title} (${payload.page.url})\n`);
@@ -168,13 +170,44 @@ function buildMessages(
       }
     }
   } else if (mode === 'merge') {
-    textParts.push('MERGE mode: ONE subject. MANDATORY: every connected port (Character, Material, Color, Style, etc.) MUST appear in the prompt. No port may be omitted. Format: [character] MADE OF [material] IN [colors], or in [style] style. If no Background port: background = pure white, ideal white, no gradients, no scenery.\n');
-    textParts.push('Example: "Two men MADE OF smooth yellow plastic IN orange and green." — the men ARE plastic sculptures, not wearing plastic. Whole body = material. 250+ words.\n');
+    const portRoles = ordered.map((c) => {
+      const title = ((c as { slotTitle?: string }).slotTitle || c.slotId || '').toLowerCase();
+      if (/character|person|subject|персонаж|герой|кэрект|керект|модель/.test(title)) return 'character';
+      if (/material|texture|surface|fabric|текстур|материал|фактура/.test(title)) return 'material';
+      if (/color|colour|palette|цвет|палитра|колор/.test(title)) return 'color';
+      if (/style|styl|illustration|эстетик|стиль/.test(title)) return 'style';
+      if (/composition|компози|layout|framing/.test(title)) return 'composition';
+      if (/tone|mood|vibe|атмосфер|настроен/.test(title)) return 'tone';
+      if (/background|scene|фон|бэкграунд|setting|environment/.test(title)) return 'background';
+      if (/shape|form|silhouette|форма|силуэт/.test(title)) return 'shape';
+      if (/light|lighting|shadows|свет|освещ/.test(title)) return 'light';
+      if (/font|typograph|text|шрифт|типограф|надпись/.test(title)) return 'typography';
+      return 'generic';
+    });
+    const hasCharacterPort = portRoles.includes('character');
+    const hasMaterialPort = portRoles.includes('material');
+    const hasColorPort = portRoles.includes('color');
+    const hasStylePort = portRoles.includes('style');
+    const hasCompositionPort = portRoles.includes('composition');
+    const hasTonePort = portRoles.includes('tone');
+    const hasBackgroundPort = portRoles.includes('background');
+    const characterIdx = portRoles.indexOf('character');
+    const materialIdx = portRoles.indexOf('material');
+    const colorIdx = portRoles.indexOf('color');
+
+    textParts.push('MERGE mode: combine aspects from connected ports into ONE coherent image prompt.\n');
+    textParts.push('MANDATORY: every connected port MUST appear in generatedPrompt. No port may be omitted.\n');
+    if (hasCharacterPort && hasMaterialPort) {
+      textParts.push('Format when Character + Material: "[character subject] MADE OF [material texture]". The ENTIRE character body is made of that material — as a sculpture. NOT just clothing.\n');
+      textParts.push('Example: "Two men MADE OF smooth yellow plastic IN orange and green." — the men ARE plastic.\n');
+    }
+
     if (ordered.length > 0) {
-      textParts.push('\nPORTS — extract aspect from each image:\n');
+      textParts.push('\nPORTS — extract the specific aspect from each image:\n');
       ordered.forEach((c, i) => {
         const slotTitle = (c as { slotTitle?: string }).slotTitle || c.slotId;
-        textParts.push(`- PORT [${i + 1}] "${slotTitle}": extract from this image`);
+        const role = portRoles[i];
+        textParts.push(`- PORT [${i + 1}] "${slotTitle}" (role: ${role}): extract from this image`);
         textParts.push(`  Type: ${c.targetType}`);
         if (c.meta.src) textParts.push(`  URL: ${c.meta.src}`);
         if (c.meta.alt) textParts.push(`  Alt: ${c.meta.alt}`);
@@ -182,32 +215,101 @@ function buildMessages(
         textParts.push('');
       });
     }
+
     if (hasImages) {
       textParts.push(`\n=== STRICT: Each image = ONE port only ===`);
       ordered.forEach((c, i) => {
         const slotTitle = (c as { slotTitle?: string }).slotTitle || c.slotId;
-        textParts.push(`Image ${i + 1} → ${slotTitle} ONLY. Do NOT use this image for any other port.`);
+        textParts.push(`Image ${i + 1} → "${slotTitle}" ONLY. Do NOT use this image for any other port.`);
       });
-      textParts.push(`\nCRITICAL: generatedPrompt = expand descriptions into rich, detailed prompt. Elaborate — add texture, nuance. Do NOT invent (no "Dali", no artists). Expansion = deepening, not adding new concepts.`);
-      const hasColorPort = ordered.some((c) => /color|colour|palette|цвет|палитра/i.test((c as { slotTitle?: string }).slotTitle || c.slotId || ''));
-      textParts.push(`\nMaterial port: texture/surface (smooth, glossy). When Color exists: no color in Material.`);
-      if (hasColorPort) {
-        textParts.push(`\nCOLOR RULE: Colors come ONLY from Color port. Character and Material give NO colors. Color image → extract all its colors (teal bear → "teal, black, yellow, pink, green"; dog → "yellow, black, red").`);
-        textParts.push(`\nCharacter port: NO color words when Color exists. Material port: NO color. Colors in generatedPrompt = only from Color (desc[2]).`);
+
+      textParts.push(`\n=== PORT EXTRACTION RULES ===`);
+      ordered.forEach((c, i) => {
+        const slotTitle = (c as { slotTitle?: string }).slotTitle || c.slotId;
+        const role = portRoles[i];
+        switch (role) {
+          case 'character':
+            textParts.push(`\nPort "${slotTitle}" (Image ${i + 1}) = CHARACTER: Extract ONLY the subject — who/what it is, form, pose, expression. The subject can be person, animal, object, machine. Describe EXACTLY what you see. NO background, NO text/captions from the image. ${hasColorPort ? 'NO color words — colors come from Color port.' : 'Include visible colors.'} ${hasMaterialPort ? 'NO material/texture words — material comes from Material port.' : ''}`);
+            break;
+          case 'material':
+            textParts.push(`\nPort "${slotTitle}" (Image ${i + 1}) = MATERIAL: Extract ONLY the texture/surface from this image. Describe the surface as if touching it: smooth, rough, porous, glossy, matte, bumpy, granular, woven, corroded, oxidized, scratched, worn, etc. Detail: micro-texture, grain, finish, wear, tactile quality.
+FORBIDDEN in Material description:
+- Object names: NOT "tank", NOT "canister", NOT "orange", NOT "fruit", NOT "phone". The object is INVISIBLE.
+- Shape/form words: NOT "cylindrical", NOT "round". Only surface quality.${hasColorPort ? `
+- ANY color words: NOT "red", NOT "rusty" (implies brown), NOT "golden", NOT "silver". If the surface is oxidized, say "heavily oxidized corroded surface" not "rusty red". Colors come EXCLUSIVELY from Color port.` : ''}
+TEST: Read your Material description. If it contains any noun naming a thing or ${hasColorPort ? 'any color adjective, ' : ''}any shape word — rewrite it with pure tactile/surface vocabulary.`);
+            break;
+          case 'color':
+            textParts.push(`\nPort "${slotTitle}" (Image ${i + 1}) = COLOR: Extract ONLY color names from this image. List all visible colors: "teal, black, yellow, warm orange, soft pink". NEVER describe objects or characters — only colors. NO "blue bear" — just "blue, white, yellow".`);
+            break;
+          case 'style':
+            textParts.push(`\nPort "${slotTitle}" (Image ${i + 1}) = STYLE: Extract the visual style — illustration type, aesthetic, rendering technique, key visual elements. This style will be APPLIED to the character. In generatedPrompt: OPEN with "In [style] style, ..." MANDATORY.`);
+            break;
+          case 'composition':
+            textParts.push(`\nPort "${slotTitle}" (Image ${i + 1}) = COMPOSITION: Extract layout, framing, balance, symmetry, perspective, negative space, camera angle, cropping. NO subject description, NO colors, NO materials.`);
+            break;
+          case 'tone':
+            textParts.push(`\nPort "${slotTitle}" (Image ${i + 1}) = TONE/MOOD: Extract atmosphere, emotion, feeling, vibe, energy. NO subject description, NO colors.`);
+            break;
+          case 'background':
+            textParts.push(`\nPort "${slotTitle}" (Image ${i + 1}) = BACKGROUND: Extract the setting, environment, backdrop. Describe scene context.`);
+            break;
+          case 'shape':
+            textParts.push(`\nPort "${slotTitle}" (Image ${i + 1}) = SHAPE/FORM: Extract silhouette, proportions, geometry, contours. NO material, NO color.`);
+            break;
+          case 'light':
+            textParts.push(`\nPort "${slotTitle}" (Image ${i + 1}) = LIGHTING: Extract light direction, soft/hard, shadows, highlights, reflections.`);
+            break;
+          case 'typography':
+            textParts.push(`\nPort "${slotTitle}" (Image ${i + 1}) = TYPOGRAPHY: Extract text content verbatim, typeface style, weight, kerning, decoration.`);
+            break;
+          default:
+            textParts.push(`\nPort "${slotTitle}" (Image ${i + 1}) = GENERIC: Extract the aspect implied by the port name "${slotTitle}".`);
+        }
+      });
+
+      textParts.push(`\n\n=== generatedPrompt CONSTRUCTION ===`);
+      textParts.push(`\ngeneratedPrompt = expand imageDescriptions into a rich, detailed prompt for image generation.`);
+      textParts.push(`\nRULES:`);
+      textParts.push(`- Elaborate each description — add detail, texture, nuance. Do NOT invent new elements (no artists, no brands).`);
+      textParts.push(`- Expansion = deepening what is described, not adding new concepts.`);
+      textParts.push(`- MINIMUM 250 words. Under 200 = failure.`);
+      textParts.push(`- ENGLISH only. DALL-E ready. No "OR" or alternatives.`);
+
+      if (hasCharacterPort) {
+        textParts.push(`\nSUBJECT in generatedPrompt = EXACTLY from the Character port (Image ${characterIdx + 1}, desc[${characterIdx}]). Use the described subject verbatim.`);
+        if (hasMaterialPort) {
+          textParts.push(`\nMADE OF RULE (CRITICAL): The character's ENTIRE BODY is made of the Material texture. Like a sculpture. The body, skin, face, hair, limbs — ALL made of that surface.
+WRONG: "figure wearing white clothes, holding a [material] briefcase" — this puts material on a separate object.
+CORRECT: "figure MADE OF [material texture], the entire body surface showing [texture details]" — the figure IS the material.
+Do NOT create separate objects from the material. Do NOT put material only on clothing or accessories. The material IS the character's body.
+Material source: desc[${materialIdx}] (Image ${materialIdx + 1}).`);
+        }
+        if (hasColorPort) {
+          textParts.push(`\nCOLOR APPLICATION (CRITICAL): Colors from Color port (desc[${colorIdx}]) apply to the SUBJECT/CHARACTER — the figure's body, surface, and material. NOT to the background. NOT as ambient light. NOT as a gradient behind the figure.
+WRONG: "colors emanate from the background as a subtle gradient"
+CORRECT: "the figure's body surface displays hues of [colors from Color port]"
+Colors = the subject's own coloring. Background stays plain white (unless Background port exists).`);
+        }
       } else {
-        textParts.push(`\nCOLOR RULE: No Color port — use all visible colors from Character, Material, etc. Character and Material may include colors.`);
+        textParts.push(`\nNo explicit Character port. The generatedPrompt should combine all port aspects into a cohesive image concept.`);
       }
-      textParts.push(`\nCharacter in generatedPrompt: subject = EXACTLY from Image 1 (desc[0]). Character can be object: suitcase, box, controller, machine. If Image 1 = suitcase → "suitcase", NOT "man". Use desc[0] verbatim.`);
-      textParts.push(`\nBelow are ${imageUrls.length} image(s) in order. imageDescriptions[i] = extract ONLY from image i+1.`);
-      const hasStylePort = ordered.some((c) => /style|styl|illustration/i.test((c as { slotTitle?: string }).slotTitle || c.slotId || ''));
+
       if (hasStylePort) {
-        textParts.push(`\nSTYLE PORT: APPLY the style from the Style image TO the character. The character is RENDERED in that style — do NOT just copy the Character image as-is. Style = transformation. Embed "in [style] style" in FIRST sentence. Character: NO text (no speech bubbles, captions, "Yes sir").`);
+        textParts.push(`\nSTYLE: OPEN generatedPrompt with "In [style] style, ..." — the style from the Style port. Character is rendered IN that style.`);
       }
-      textParts.push(`\nCRITICAL: Format adapts to ports. 250+ words.`);
-      const hasBackgroundPort = ordered.some((c) => /background|scene|фон|бэкграунд|setting|environment/i.test((c as { slotTitle?: string }).slotTitle || c.slotId || ''));
+      if (hasCompositionPort) {
+        textParts.push(`\nCOMPOSITION: Apply the composition/framing from the Composition port to the overall image layout.`);
+      }
+      if (hasTonePort) {
+        textParts.push(`\nTONE: Apply the mood/atmosphere from the Tone port to the overall image feel.`);
+      }
       if (!hasBackgroundPort) {
-        textParts.push(`\nBACKGROUND: No Background port — MANDATORY: add "on plain white background" or "on pure white background". Do NOT invent dark, dim, fiery, or dramatic background. Only white.`);
+        textParts.push(`\nBACKGROUND: No Background port — MANDATORY: "on plain white background". Do NOT invent dramatic, dark, or colored backgrounds.`);
       }
+
+      textParts.push(`\nBelow are ${imageUrls.length} image(s) in port order. imageDescriptions[i] = extract ONLY from image i+1.`);
+      textParts.push(`\nCRITICAL: Every port MUST appear in generatedPrompt. Verify before replying.`);
     }
   } else {
     textParts.push(`USER PROMPT (MAIN SUBJECT — the image MUST depict this): "${payload.prompt ?? ''}"\n`);
@@ -247,53 +349,53 @@ function buildMessages(
     systemPrompt = hasImages
       ? `${MERGE_INSTRUCTIONS}
 
-CRITICAL: Every connected port MUST appear in generatedPrompt. Character, Material, Color, Style — ALL ports in this request. No exceptions. Never omit.
-CRITICAL: generatedPrompt MUST be at least 250 words. Expand each part. Count words before replying.
+You are a Port Describer and Merge Compiler. You receive ports with user-chosen names and images. Each port name defines what aspect to extract from that port's image.
 
 Ports in this request: ${slotTitlesList}
 
-CRITICAL 1:1 MAPPING — Image 1 = Character. SUBJECT = exactly from Image 1. Character can be object: suitcase, box, controller, machine. If Image 1 = suitcase → subject is "suitcase", NOT "man". If Image 1 = dog → "dog". NEVER substitute with man/human when Character image is an object. imageDescriptions[i] = ONLY from image i+1.
+## CORE RULES
+1. Each port = extract ONLY its aspect from its own image. NEVER cross-reference images between ports.
+2. imageDescriptions[i] = extracted aspect for port i. Plain string. No DESCRIPTION/NEGATIVE_HINTS/TRACE blocks.
+3. generatedPrompt = combine all imageDescriptions into ONE coherent image-generation prompt. Every port MUST appear. MINIMUM 250 words. ENGLISH. DALL-E ready.
 
-STRICT: Each port = ONLY its aspect from its image. Material port = texture. Color port = color names. Style port = visual style (graphic, illustration type, key elements). NEVER object names. NEVER mix images.
+## PORT EXTRACTION BY ROLE (the user message specifies each port's role)
+- CHARACTER: subject only — who/what, form, pose, expression. NEVER name materials, textures, or backgrounds from this image.
+- MATERIAL: texture/surface ONLY. Describe as if touching: smooth, rough, porous, granular, bumpy, woven, glossy, matte. NEVER name the object ("orange", "fruit", "phone", "keypad"). WRONG: "tropical-fruit texture on both fruits". CORRECT: "coarse porous organic surface with bumpy granular skin, micro-blemishes, slightly uneven matte finish". The object is INVISIBLE — only its surface exists.
+- COLOR: color names ONLY. "teal, black, warm orange, soft pink". NEVER describe objects — only colors.
+- STYLE: visual style, illustration type, aesthetic. Used to transform the character.
+- COMPOSITION: layout, framing, symmetry, perspective, negative space. NO subject, NO colors.
+- TONE: atmosphere, mood, emotion, energy. NO subject description.
+- BACKGROUND: setting, environment, backdrop.
+- SHAPE: silhouette, proportions, geometry. NO material, NO color.
+- LIGHT: direction, shadows, highlights, reflections.
+- TYPOGRAPHY: text content verbatim, typeface characteristics.
+- GENERIC: extract the aspect implied by port name.
 
-For EACH port: extract ONLY its aspect. IGNORE the rest.
-- Character: ONLY the subject — who, form, pose, expression. If recognizable — NAME them. NO background, NO material, NO colors. STRICT: NO text — no "Yes sir", speech bubbles, captions, inscriptions, logos. If image has text — omit it entirely. Only visual subject.
-- Material: ONLY texture/surface words. NEVER name the object. Keypad/buttons → "worn metallic surface with engraved letters and numbers, distressed finish, grayish-silver, tarnished steel". NOT "buttons", NOT "keypad". Shopping cart → "wireframe, metal mesh". Remote → "smooth plastic, matte". Describe the SURFACE in detail — do NOT say what the object is.
-- Color: ONLY color names. NEVER character/object. Blue bear image → "blue, white, yellow, colorful accents". NOT "blue cartoon bear" or "bear with stars". Only: "blue, white, vibrant yellow, star accents".
-OUTPUT FORMAT: Reply in JSON with imageDescriptions as array of plain strings. Each imageDescriptions[i] = extracted aspect for port i. Do NOT use DESCRIPTION/NEGATIVE_HINTS/TRACE blocks. Use plain strings only.
+## MATERIAL RULE (CRITICAL — most common error)
+Material imageDescription must contain ZERO object names and (when Color port exists) ZERO color words.
+Test: if your Material description mentions ANY noun that names a thing (fruit, orange, tank, canister, leather, phone, button, cart, bag) → REWRITE.
+Test: if Color port exists and Material description contains ANY color word (red, rusty, golden, silver, brown, blue) → REWRITE. Say "oxidized corroded" not "rusty red".
+Example: Image of red fuel tank → "heavily worn corroded metallic surface, rough sandpapery texture with deep scratches, visible oxidation patches, pitted and uneven finish, cold rigid tactile quality" — NOT "rough red rusty metal tank surface".
+Example: Image of oranges → "coarse bumpy organic surface, porous granular skin with micro-blemishes, slightly rough matte finish" — NOT "tropical-fruit texture on both fruits".
 
-## MERGE RULES (by port intent — infer from port NAME per merge.md §8)
-User can add any ports with custom names. Infer intent from name (character, material, color, shape, mockup, light, background, etc.).
+## MADE OF RULE (CRITICAL — second most common error)
+When Character + Material ports exist: the character's ENTIRE BODY is the material. Like a sculpture or statue.
+WRONG: "figure wearing white clothes, holding a [material] briefcase" — material applied to a separate object.
+WRONG: "figure in outfit with material-textured accessories" — material on accessories only.
+CORRECT: "figure MADE OF [material texture], entire body surface showing [texture details]" — the figure IS the material.
 
-- Each port: extract ONLY from its assigned image. WRONG: Material mentions "monkeys" when monkeys are in Character image — Material must come ONLY from Material image. WRONG: Color mentions "gorilla" — Color must come ONLY from Color image.
-- Character = subject + form from Character image.
-- Material = texture/surface from Material image ONLY. Describe the surface in detail (worn metal, engraved, distressed, grayish-silver) — NEVER name the object (buttons, keypad, remote, cart).
-- Color = color names from Color image ONLY.
-- Style = APPLY the style from the Style image TO the character. The Style image defines HOW to render — the character is TRANSFORMED by it. NOT a direct copy of Character image. Example: Style = Lucha Libre mask → character in mask, lucha aesthetic. Style = LEGO mosaic → character in LEGO brick style. MANDATORY: "in [style] style" or "In [style], " — the style from Style image, not from Character image. Never omit.
-- Shape/form = apply form/silhouette to subject.
-- Mockup/scene/layout = context, carrier, framing.
-- Light/lighting = lighting for the scene.
-- Background/environment = background, setting.
-- Typography/text = if text port, literal text on subject/carrier.
-- Generic = include as constraint/attribute.
+## COLOR APPLICATION RULE (CRITICAL — third most common error)
+When Color port exists: colors apply to the SUBJECT, not the background.
+WRONG: "colors emanate from the background as a gradient" — colors on background.
+CORRECT: "the figure's body displays hues of [colors]" — colors on the subject.
+Background stays plain white unless a Background port provides different instructions.
 
-Merge: ONE subject. Include ALL port aspects. Format adapts to ports:
-- Character + Material + Color: [character] MADE OF [material] IN [colors]. The ENTIRE character (body, skin, face, hair) is made of the material. NOT just clothing. Whole figure = sculpture of that material. Colors apply to the whole subject.
-- Character + Style + Color: [character] in [style] style IN [colors]. OPEN with style: "In [full style description], [character] MADE OF... IN [colors]."
-- Character + Style (no Material): "In [style], [character]..." — style in first sentence.
-- Style port: MANDATORY. Prompt MUST contain "in [style] style" or "In [style], " with full style description. Never skip.
-If no Background/Scene port: background = pure white, ideal white. No gradients, no scenery.
+## generatedPrompt FORMAT
+Adapt to the ports present. The user message specifies the combination pattern.
+LENGTH IS MANDATORY — MINIMUM 250 words. Under 200 = FAILURE.
+Before replying: verify EACH port appears in generatedPrompt. COUNT WORDS. No "OR" or alternatives.
 
-generatedPrompt: Expand imageDescriptions into a rich, detailed prompt. Elaborate what is in desc[0], desc[1], desc[2], desc[Style] — add detail, texture, nuance. Do NOT invent new elements (no "Dali", no artists). Expansion = deepening the descriptions, not adding new concepts.
-LENGTH IS MANDATORY — MINIMUM 250 words. Under 200 words = FAILURE. Expand aggressively.
-- Character: 80-100 words (anatomy, pose, expression, form, details).
-- Material/Style/Shape: 60-80 words each (texture, surface, finish, grain).
-- Palette: 30-50 words (colors, tones, saturation, contrast).
-- Composition: 30+ words (framing, balance, perspective).
-- Lighting: 20+ words (direction, shadows, highlights).
-Before replying: verify EACH port from the request appears in generatedPrompt. If any port is missing — add it. COUNT WORDS. If under 250, ADD MORE DETAIL. No "OR" or alternatives. ENGLISH. DALL-E ready.
-
-Reply in JSON: imageDescriptions (array of plain strings, one per port), summary, styleSignals, generatedPrompt. No DESCRIPTION/NEGATIVE_HINTS/TRACE in output.`
+Reply in JSON: imageDescriptions (array of plain strings, one per port), summary, styleSignals, generatedPrompt.`
       : 'MERGE mode requires at least one connected image. Connect images to ports and try again.';
   } else {
     systemPrompt = hasImages
@@ -399,6 +501,174 @@ function buildMotionSynthesisMessages(
   ];
 }
 
+function inferPortRole(title: string): string {
+  const t = title.toLowerCase();
+  if (/character|person|subject|персонаж|герой/.test(t)) return 'character';
+  if (/material|texture|surface|fabric|текстур|материал/.test(t)) return 'material';
+  if (/color|colour|palette|цвет|палитра/.test(t)) return 'color';
+  if (/style|styl|illustration|стиль/.test(t)) return 'style';
+  if (/composition|компози|layout|framing/.test(t)) return 'composition';
+  if (/tone|mood|vibe|атмосфер/.test(t)) return 'tone';
+  if (/background|scene|фон|setting/.test(t)) return 'background';
+  if (/shape|form|silhouette|форма/.test(t)) return 'shape';
+  if (/light|lighting|shadows|свет/.test(t)) return 'light';
+  return 'generic';
+}
+
+function buildFallbackMergePrompt(
+  ordered: Array<{ slotId: string; slotTitle?: string; meta: Record<string, unknown> }>,
+  descs: string[]
+): string {
+  const roles = ordered.map((c) => inferPortRole((c as { slotTitle?: string }).slotTitle || c.slotId));
+  const charIdx = roles.indexOf('character');
+  const matIdx = roles.indexOf('material');
+  const colIdx = roles.indexOf('color');
+  const styleIdx = roles.indexOf('style');
+
+  const parts: string[] = [];
+  if (charIdx >= 0 && descs[charIdx]) {
+    let subject = descs[charIdx];
+    if (styleIdx >= 0 && descs[styleIdx]) {
+      parts.push(`In ${descs[styleIdx]} style, ${subject}`);
+    } else {
+      parts.push(subject);
+    }
+    if (matIdx >= 0 && descs[matIdx]) parts.push(`MADE OF ${descs[matIdx]}`);
+    if (colIdx >= 0 && descs[colIdx]) parts.push(`IN ${descs[colIdx]}`);
+  } else {
+    ordered.forEach((c, i) => {
+      const title = (c as { slotTitle?: string }).slotTitle || c.slotId;
+      if (descs[i]) parts.push(`${title}: ${descs[i]}`);
+    });
+  }
+
+  ordered.forEach((c, i) => {
+    const role = roles[i];
+    if (['character', 'material', 'color', 'style'].includes(role)) return;
+    const title = (c as { slotTitle?: string }).slotTitle || c.slotId;
+    if (descs[i]) parts.push(`${title}: ${descs[i]}`);
+  });
+
+  return parts.filter(Boolean).join('. ') + '.';
+}
+
+function buildMergeExtractionMessages(
+  payload: AssistantSendRequestPayload,
+  imageUrls: string[]
+): Array<{ role: 'system' | 'user'; content: MessageContent }> {
+  const ordered = getConnectionsBySlotOrder(payload);
+  const portInfos = ordered.map((c) => {
+    const title = (c as { slotTitle?: string }).slotTitle || c.slotId;
+    return { title, role: inferPortRole(title) };
+  });
+  const hasColorPort = portInfos.some((p) => p.role === 'color');
+
+  let system = `You are a Port Describer. For each port, extract ONLY the aspect specified by its role from the corresponding image. Reply in JSON: { "imageDescriptions": ["desc for port 1", "desc for port 2", ...] }
+
+RULES:
+- Each port = extract ONLY from its own image. Never cross-reference.
+- CHARACTER: subject only — who/what, form, pose, expression. No background, no material, no text.${hasColorPort ? ' No color words.' : ''}
+- MATERIAL: texture/surface ONLY as if touching: smooth, rough, porous, bumpy, corroded, granular, woven. NEVER name the object (not "tank", "fruit", "phone"). NEVER describe shape.${hasColorPort ? ' ZERO color words (not "red", "rusty", "golden").' : ''} Object is invisible — only surface exists.
+- COLOR: color names ONLY. "blue, green, warm orange". No objects, no characters.
+- COMPOSITION: layout, framing, perspective, symmetry, negative space, camera angle. NOT the scene content. NOT what is depicted. ONLY how it is arranged visually.
+- STYLE: visual style, illustration technique, aesthetic. For applying to another subject.
+- TONE: atmosphere, mood, emotion, energy. No subject description.
+- BACKGROUND: setting, environment, backdrop context.
+- SHAPE: silhouette, proportions, geometry. No material, no color.
+- LIGHT: light direction, shadows, highlights.
+- GENERIC: extract the aspect implied by the port name.
+
+Keep each description 1-3 sentences. Factual, no speculation.`;
+
+  const textParts: string[] = [];
+  textParts.push(`Page: ${payload.page.title}\n`);
+  ordered.forEach((c, i) => {
+    const info = portInfos[i];
+    textParts.push(`Image ${i + 1} → Port "${info.title}" (role: ${info.role})`);
+  });
+  textParts.push(`\nExtract from each image ONLY its port's aspect. Reply in JSON: { "imageDescriptions": [...] }`);
+
+  const parts: MessageContent[0][] = [{ type: 'text' as const, text: textParts.join('\n') }];
+  imageUrls.forEach((url, i) => {
+    const info = portInfos[i];
+    if (info) parts.push({ type: 'text' as const, text: `\nImage ${i + 1} (${info.title} / ${info.role}):` });
+    parts.push({ type: 'image_url' as const, image_url: { url } });
+  });
+
+  return [
+    { role: 'system', content: system },
+    { role: 'user', content: parts },
+  ];
+}
+
+function buildMergeSynthesisMessages(
+  payload: AssistantSendRequestPayload,
+  descriptions: string[]
+): Array<{ role: 'system' | 'user'; content: string }> {
+  const ordered = getConnectionsBySlotOrder(payload);
+  const portInfos = ordered.map((c, i) => {
+    const title = (c as { slotTitle?: string }).slotTitle || c.slotId;
+    return { title, role: inferPortRole(title), desc: descriptions[i] ?? '' };
+  });
+
+  const hasCharacter = portInfos.some((p) => p.role === 'character');
+  const hasMaterial = portInfos.some((p) => p.role === 'material');
+  const hasColor = portInfos.some((p) => p.role === 'color');
+  const hasStyle = portInfos.some((p) => p.role === 'style');
+  const hasBackground = portInfos.some((p) => p.role === 'background');
+
+  let system = `You are a Merge Prompt Compiler. You receive extracted descriptions from image ports. Your ONLY job: combine them into ONE coherent image-generation prompt (generatedPrompt).
+
+RULES:
+- generatedPrompt must include EVERY port's description. No port may be omitted.
+- MINIMUM 250 words. ENGLISH. DALL-E ready. No "OR" or alternatives.
+- Do NOT invent new elements. Only elaborate what is in the descriptions.
+- Do NOT mention "Image 1", "Port 2", "extracted from". The prompt must be self-contained.`;
+
+  if (hasCharacter && hasMaterial) {
+    system += `\n\nMADE OF RULE: The character's ENTIRE BODY is made of the Material texture. Like a sculpture/statue. Body, skin, face, limbs — ALL are that material.
+WRONG: "figure wearing clothes, holding a [material] object"
+CORRECT: "figure MADE OF [material texture], entire body surface showing [details]"`;
+  }
+  if (hasCharacter && hasColor) {
+    system += `\n\nCOLOR RULE: Colors apply to the SUBJECT's body/surface, NOT to the background, NOT as ambient light.
+WRONG: "colors emanate from the background"
+CORRECT: "the figure's surface displays hues of [colors]"`;
+  }
+  if (!hasBackground) {
+    system += `\n\nBACKGROUND: No Background port. Use "on plain white background". Do NOT invent colored, dark, or dramatic backgrounds.`;
+  }
+
+  system += `\n\nHOW TO APPLY EACH ROLE:
+- CHARACTER → the main subject of the image
+- MATERIAL → the subject's body IS this texture (sculpture)
+- COLOR → the subject's coloring / palette
+- STYLE → render the subject in this visual style ("In [style] style, ...")
+- COMPOSITION → apply this layout/framing/perspective to the image
+- TONE → the overall mood/atmosphere of the image
+- BACKGROUND → the setting behind the subject
+- SHAPE → the subject's silhouette/proportions
+- LIGHT → the lighting of the scene
+
+CRITICAL: COMPOSITION = how the image is framed/composed (angle, symmetry, balance, negative space). NOT what is depicted in the source image. Apply the LAYOUT, not the content.
+
+Reply in JSON: { "generatedPrompt": "...", "summary": "...", "styleSignals": [...] }`;
+
+  let text = 'Combine these extracted port descriptions into one image prompt:\n\n';
+  portInfos.forEach((p) => {
+    text += `${p.title} (${p.role}): ${p.desc}\n\n`;
+  });
+  if (payload.prompt?.trim()) {
+    text += `User note: ${payload.prompt.trim()}\n\n`;
+  }
+  text += 'Generate the merged generatedPrompt (250+ words, English, DALL-E ready).';
+
+  return [
+    { role: 'system', content: system },
+    { role: 'user', content: text },
+  ];
+}
+
 async function callAPI(
   payload: AssistantSendRequestPayload,
   apiKey: string,
@@ -439,8 +709,65 @@ async function callAPI(
     Authorization: `Bearer ${apiKey}`,
   };
 
+  const isMergeTwoStep = hasImages && (
+    payload.mode === 'merge' ||
+    (payload.mode === 'compile' && !(typeof payload.prompt === 'string' && payload.prompt.trim()) && imageUrls.length > 0)
+  );
+
   let content: string;
-  if (isMotionMulti) {
+  if (isMergeTwoStep) {
+    // --- STEP 1: Extract descriptions from each port ---
+    const extractMessages = capMessagesImages(buildMergeExtractionMessages(payload, imageUrls));
+    const extractRes = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ model, messages: extractMessages, max_tokens: 2048, response_format: { type: 'json_object' as const } }),
+    });
+    if (!extractRes.ok) {
+      const text = await extractRes.text();
+      if (extractRes.status === 401) throw { code: 'auth' as AssistantErrorCode, message: 'Invalid or missing API key' };
+      if (extractRes.status === 429) throw { code: 'rate_limit' as AssistantErrorCode, message: 'Rate limit exceeded' };
+      throw { code: 'network' as AssistantErrorCode, message: text || extractRes.statusText };
+    }
+    const extractData = (await extractRes.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const extractContent = extractData.choices?.[0]?.message?.content ?? '';
+    let descriptions: string[] = [];
+    try {
+      const parsed = JSON.parse(extractContent) as { imageDescriptions?: string[] };
+      if (Array.isArray(parsed.imageDescriptions)) {
+        descriptions = parsed.imageDescriptions.map((d) => typeof d === 'string' ? d : '');
+      }
+    } catch {
+      descriptions = [];
+    }
+    if (descriptions.length === 0) {
+      throw { code: 'network' as AssistantErrorCode, message: 'Failed to extract descriptions from ports. Raw: ' + extractContent.slice(0, 300) };
+    }
+
+    // --- STEP 2: Synthesize descriptions into generatedPrompt (text-only, no images) ---
+    const textModel = provider === 'groq' ? 'llama-3.1-8b-instant' : 'gpt-4o-mini';
+    const synthMessages = buildMergeSynthesisMessages(payload, descriptions);
+    const synthRes = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ model: textModel, messages: synthMessages, max_tokens: 4096, response_format: { type: 'json_object' as const } }),
+    });
+    if (!synthRes.ok) {
+      const text = await synthRes.text();
+      if (synthRes.status === 401) throw { code: 'auth' as AssistantErrorCode, message: 'Invalid or missing API key' };
+      if (synthRes.status === 429) throw { code: 'rate_limit' as AssistantErrorCode, message: 'Rate limit exceeded' };
+      throw { code: 'network' as AssistantErrorCode, message: text || synthRes.statusText };
+    }
+    const synthData = (await synthRes.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const synthContent = synthData.choices?.[0]?.message?.content ?? '';
+    try {
+      const synthParsed = JSON.parse(synthContent) as Record<string, unknown>;
+      synthParsed.imageDescriptions = descriptions;
+      content = JSON.stringify(synthParsed);
+    } catch {
+      content = JSON.stringify({ imageDescriptions: descriptions, generatedPrompt: synthContent });
+    }
+  } else if (isMotionMulti) {
     const chunks: string[][] = [];
     for (let i = 0; i < imageUrls.length; i += PER_REQUEST_IMAGES) {
       chunks.push(imageUrls.slice(i, i + PER_REQUEST_IMAGES));
@@ -611,16 +938,9 @@ async function callAPI(
     if (!generatedPrompt && imageDescriptions?.length) {
       const ordered = getConnectionsBySlotOrder(payload);
       if (ordered.length > 0) {
-        const mode = payload.mode ?? 'compile';
-        if (mode === 'merge' && ordered.length >= 3) {
-          const [char, mat, col] = [imageDescriptions[0] ?? '', imageDescriptions[1] ?? '', imageDescriptions[2] ?? ''];
-          if (char && mat && col) {
-            generatedPrompt = `${char} MADE OF ${mat} IN ${col}.`;
-          } else {
-            generatedPrompt = imageDescriptions.filter(Boolean).join('; ');
-          }
-        } else if (mode === 'merge') {
-          generatedPrompt = imageDescriptions.filter(Boolean).join('; ');
+        const fMode = payload.mode ?? 'compile';
+        if (fMode === 'merge' || (fMode === 'compile' && !(typeof payload.prompt === 'string' && payload.prompt.trim()))) {
+          generatedPrompt = buildFallbackMergePrompt(ordered, imageDescriptions);
         } else {
           const parts: string[] = [`Create an image of ${payload.prompt ?? ''}. Apply the following aspects from the reference images:`];
           ordered.forEach((c, i) => {
@@ -633,7 +953,8 @@ async function callAPI(
         }
       }
     }
-    if (generatedPrompt && payload.mode === 'merge') {
+    const isMergeLike = payload.mode === 'merge' || (payload.mode === 'compile' && !(typeof payload.prompt === 'string' && payload.prompt.trim()));
+    if (generatedPrompt && isMergeLike) {
       generatedPrompt = normalizeMergePrompt(generatedPrompt);
       const ordered = getConnectionsBySlotOrder(payload);
       const hasColorPort = ordered.some((c) => /color|colour|palette|цвет|палитра/i.test((c as { slotTitle?: string }).slotTitle || c.slotId || ''));
@@ -676,16 +997,9 @@ async function callAPI(
     const result = fallback ?? { text: content };
     if (!result.generatedPrompt && result.imageDescriptions?.length) {
       const ordered = getConnectionsBySlotOrder(payload);
-      const mode = payload.mode ?? 'compile';
-      if (mode === 'merge' && ordered.length >= 3) {
-        const [char, mat, col] = [result.imageDescriptions![0] ?? '', result.imageDescriptions![1] ?? '', result.imageDescriptions![2] ?? ''];
-        if (char && mat && col) {
-          result.generatedPrompt = `${char} MADE OF ${mat} IN ${col}.`;
-        } else {
-          result.generatedPrompt = result.imageDescriptions!.filter(Boolean).join('; ');
-        }
-      } else if (mode === 'merge') {
-        result.generatedPrompt = result.imageDescriptions!.filter(Boolean).join('; ');
+      const fMode = payload.mode ?? 'compile';
+      if (fMode === 'merge' || (fMode === 'compile' && !(typeof payload.prompt === 'string' && payload.prompt.trim()))) {
+        result.generatedPrompt = buildFallbackMergePrompt(ordered, result.imageDescriptions!);
       } else {
         const parts: string[] = [`Create an image of ${payload.prompt ?? ''}. Apply the following aspects from the reference images:`];
         ordered.forEach((c, i) => {
@@ -697,7 +1011,7 @@ async function callAPI(
         result.generatedPrompt = parts.join('\n\n');
       }
     }
-    if (result.generatedPrompt && payload.mode === 'merge') {
+    if (result.generatedPrompt && (payload.mode === 'merge' || (payload.mode === 'compile' && !(typeof payload.prompt === 'string' && payload.prompt.trim())))) {
       result.generatedPrompt = normalizeMergePrompt(result.generatedPrompt);
       const ordered = getConnectionsBySlotOrder(payload);
       const hasColorPort = ordered.some((c) => /color|colour|palette|цвет|палитра/i.test((c as { slotTitle?: string }).slotTitle || c.slotId || ''));
@@ -851,14 +1165,11 @@ chrome.runtime.onMessage.addListener(
       return true;
     }
     const mode = payload.mode ?? 'compile';
-    if (mode === 'compile' && (typeof payload.prompt !== 'string' || !payload.prompt?.trim())) {
-      sendResponse(sendError('invalid_payload', 'Compile mode requires a prompt'));
-      return true;
-    }
-    if (mode === 'merge') {
-      const imageUrls = getImageUrlsFromPayload(payload);
-      if (imageUrls.length === 0) {
-        sendResponse(sendError('invalid_payload', 'Merge mode requires at least one connected image'));
+    if (mode === 'compile') {
+      const hasPrompt = typeof payload.prompt === 'string' && payload.prompt.trim().length > 0;
+      const hasImages = getImageUrlsFromPayload(payload).length > 0;
+      if (!hasPrompt && !hasImages) {
+        sendResponse(sendError('invalid_payload', 'Enter a prompt or connect images to slots'));
         return true;
       }
     }
@@ -884,8 +1195,9 @@ chrome.runtime.onMessage.addListener(
       }
       try {
         let result = await callAPI(payload, apiKey, provider);
+        const effectiveMode = (mode === 'compile' && !(typeof payload.prompt === 'string' && payload.prompt.trim()) && getImageUrlsFromPayload(payload).length > 0) ? 'merge' : mode;
         if (
-          mode === 'merge' &&
+          effectiveMode === 'merge' &&
           result.generatedPrompt &&
           (settings.expandShortPrompts !== false) &&
           result.generatedPrompt.split(/\s+/).filter(Boolean).length < 200

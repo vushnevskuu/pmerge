@@ -60,10 +60,11 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
           <textarea data-prompt placeholder="e.g. make an image with this vibe on the theme of a cosmic cafe"></textarea>
         </div>
         <div class="slots" data-slots></div>
+        <div class="connections-list" data-connections-items></div>
         <button type="button" class="slot-add-btn" data-slot-add title="Add slot">+</button>
         <div class="send-row" data-send-row>
           <button type="button" class="record-btn" data-record style="display:none">Record</button>
-          <button type="button" class="send-btn" data-send>Merge</button>
+          <button type="button" class="send-btn" data-send>Generate</button>
         </div>
         <div class="status" data-status></div>
         <div class="result" data-result style="display:none">
@@ -668,9 +669,12 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
   });
 
   sendBtn.addEventListener('click', async () => {
-    const prompt = promptInput?.value?.trim();
-    if (state.mode === 'compile' && !prompt) return;
+    const prompt = (promptInput?.value ?? '').trim();
     const hasConnections = state.slotIds.some((id) => getEdgeBySlot(state, id));
+    if (state.mode === 'compile' && !prompt && !hasConnections) {
+      if (statusEl) statusEl.textContent = 'Enter a prompt or connect images to slots';
+      return;
+    }
     if (state.mode === 'motion' && !hasConnections && !state.observationFrame && recordedFrames.length === 0) return;
     statusEl.textContent = 'Sending…';
     if (resultImageWrap) resultImageWrap.innerHTML = '';
