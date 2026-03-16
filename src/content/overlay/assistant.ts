@@ -60,11 +60,11 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
           <textarea data-prompt placeholder="e.g. make an image with this vibe on the theme of a cosmic cafe"></textarea>
         </div>
         <div class="slots" data-slots></div>
-        <div class="connections-list" data-connections-items></div>
+        <div class="connections-list" data-connections-items style="display:none"></div>
         <button type="button" class="slot-add-btn" data-slot-add title="Add slot">+</button>
         <div class="send-row" data-send-row>
           <button type="button" class="record-btn" data-record style="display:none">Record</button>
-          <button type="button" class="send-btn" data-send>Generate</button>
+          <button type="button" class="send-btn" data-send>Merge</button>
         </div>
         <div class="status" data-status></div>
         <div class="result" data-result style="display:none">
@@ -203,7 +203,7 @@ export function createOverlay(callbacks: OverlayCallbacks = {}): {
         : 'e.g. make an image with this vibe on the theme of a cosmic cafe';
     }
     if (slotAddBtn) slotAddBtn.style.display = state.mode === 'motion' ? 'none' : '';
-    if (sendBtn) sendBtn.textContent = state.mode === 'motion' ? 'Describe' : 'Generate';
+    if (sendBtn) sendBtn.textContent = state.mode === 'motion' ? 'Describe' : 'Merge';
     if (recordBtn) recordBtn.style.display = state.mode === 'motion' && state.observationFrame ? '' : 'none';
     modeSwitcher?.querySelectorAll('.mode-btn').forEach((btn) => {
       const m = (btn as HTMLElement).getAttribute('data-mode');
